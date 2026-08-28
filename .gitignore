@@ -1,0 +1,16 @@
+.vs/
+.idea/
+.vscode/
+.dotnet-home/
+.dotnet/
+.nuget/
+bin/
+obj/
+artifacts/
+TestResults/
+*.user
+*.suo
+*.log
+*.db
+*.db-shm
+*.db-wal

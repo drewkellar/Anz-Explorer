@@ -1,0 +1,116 @@
+<Application
+    x:Class="AnzExplorer.App.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="AnzWindowBackgroundBrush" Color="#FF151A21" />
+                    <SolidColorBrush x:Key="AnzPaneBackgroundBrush" Color="#FF111820" />
+                    <SolidColorBrush x:Key="AnzSurfaceBrush" Color="#FF1B232D" />
+                    <SolidColorBrush x:Key="AnzSurfaceRaisedBrush" Color="#FF222C38" />
+                    <SolidColorBrush x:Key="AnzRowEvenBrush" Color="#FF171D25" />
+                    <SolidColorBrush x:Key="AnzRowOddBrush" Color="#FF151A21" />
+                    <SolidColorBrush x:Key="AnzBorderBrush" Color="#286C829A" />
+                    <SolidColorBrush x:Key="AnzColumnDividerBrush" Color="#FF44515F" />
+                    <SolidColorBrush x:Key="AnzSecondaryTextBrush" Color="#FFB9C4D0" />
+                    <SolidColorBrush x:Key="AnzFolderBrush" Color="#FFFFC83D" />
+                    <SolidColorBrush x:Key="AnzDriveBrush" Color="#FF70B7FF" />
+                    <SolidColorBrush x:Key="AnzFileBrush" Color="#FF9DB8D2" />
+                    <SolidColorBrush x:Key="AnzDocumentBrush" Color="#FF62B0FF" />
+                    <SolidColorBrush x:Key="AnzImageBrush" Color="#FFE18AE5" />
+                    <SolidColorBrush x:Key="AnzMediaBrush" Color="#FF8C9EFF" />
+                    <SolidColorBrush x:Key="AnzArchiveBrush" Color="#FFDCA85D" />
+                    <SolidColorBrush x:Key="AnzCodeBrush" Color="#FF69D3B3" />
+                    <SolidColorBrush x:Key="AnzHomeBrush" Color="#FF72B7FF" />
+                    <SolidColorBrush x:Key="AnzDownloadBrush" Color="#FF69D3B3" />
+                    <SolidColorBrush x:Key="AnzNetworkBrush" Color="#FF61D4E8" />
+                    <SolidColorBrush x:Key="AnzRemovableBrush" Color="#FFFFA95C" />
+                    <SolidColorBrush x:Key="AnzActiveTabBorderBrush" Color="#FF6FC3FF" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackground" Color="#00111820" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="#00111820" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPointerOver" Color="#00111820" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPressed" Color="#00111820" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderForeground" Color="#FF9BAAB9" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderForegroundSelected" Color="#FFFFFFFF" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderForegroundPointerOver" Color="#FFDCE6F0" />
+                    <SolidColorBrush x:Key="TabViewItemIconForegroundSelected" Color="#FF8AC4FF" />
+                    <SolidColorBrush x:Key="TabViewSelectedItemBorderBrush" Color="Transparent" />
+                    <Thickness x:Key="TabViewSelectedItemBorderThickness">0</Thickness>
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="AnzWindowBackgroundBrush" Color="#FFF4F6F8" />
+                    <SolidColorBrush x:Key="AnzPaneBackgroundBrush" Color="#FFF8F9FA" />
+                    <SolidColorBrush x:Key="AnzSurfaceBrush" Color="#FFFFFFFF" />
+                    <SolidColorBrush x:Key="AnzSurfaceRaisedBrush" Color="#FFFDFDFE" />
+                    <SolidColorBrush x:Key="AnzRowEvenBrush" Color="#09000000" />
+                    <SolidColorBrush x:Key="AnzRowOddBrush" Color="#00FFFFFF" />
+                    <SolidColorBrush x:Key="AnzBorderBrush" Color="#18000000" />
+                    <SolidColorBrush x:Key="AnzColumnDividerBrush" Color="#FFB8C1CA" />
+                    <SolidColorBrush x:Key="AnzSecondaryTextBrush" Color="#FF5F6670" />
+                    <SolidColorBrush x:Key="AnzFolderBrush" Color="#FFE5A900" />
+                    <SolidColorBrush x:Key="AnzDriveBrush" Color="#FF246FA8" />
+                    <SolidColorBrush x:Key="AnzFileBrush" Color="#FF39739F" />
+                    <SolidColorBrush x:Key="AnzDocumentBrush" Color="#FF1769AA" />
+                    <SolidColorBrush x:Key="AnzImageBrush" Color="#FF9B419E" />
+                    <SolidColorBrush x:Key="AnzMediaBrush" Color="#FF535EBA" />
+                    <SolidColorBrush x:Key="AnzArchiveBrush" Color="#FF93651D" />
+                    <SolidColorBrush x:Key="AnzCodeBrush" Color="#FF147A61" />
+                    <SolidColorBrush x:Key="AnzHomeBrush" Color="#FF1769AA" />
+                    <SolidColorBrush x:Key="AnzDownloadBrush" Color="#FF147A61" />
+                    <SolidColorBrush x:Key="AnzNetworkBrush" Color="#FF087C91" />
+                    <SolidColorBrush x:Key="AnzRemovableBrush" Color="#FFA65810" />
+                    <SolidColorBrush x:Key="AnzActiveTabBorderBrush" Color="#FF1670B8" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackground" Color="#00FFFFFF" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="#00FFFFFF" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPointerOver" Color="#00FFFFFF" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPressed" Color="#00FFFFFF" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderForeground" Color="#FF536170" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderForegroundSelected" Color="#FF0D3557" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderForegroundPointerOver" Color="#FF213B52" />
+                    <SolidColorBrush x:Key="TabViewItemIconForegroundSelected" Color="#FF1769AA" />
+                    <SolidColorBrush x:Key="TabViewSelectedItemBorderBrush" Color="Transparent" />
+                    <Thickness x:Key="TabViewSelectedItemBorderThickness">0</Thickness>
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="HighContrast">
+                    <SolidColorBrush x:Key="AnzWindowBackgroundBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="AnzPaneBackgroundBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="AnzSurfaceBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="AnzSurfaceRaisedBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="AnzRowEvenBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="AnzRowOddBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="AnzBorderBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzColumnDividerBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzSecondaryTextBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzFolderBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzDriveBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzFileBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzDocumentBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzImageBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzMediaBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzArchiveBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzCodeBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzHomeBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzDownloadBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzNetworkBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzRemovableBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="AnzActiveTabBorderBrush" Color="{ThemeResource SystemColorHighlightTextColor}" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackground" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="Transparent" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPointerOver" Color="{ThemeResource SystemColorHighlightColor}" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPressed" Color="{ThemeResource SystemColorHighlightColor}" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderForeground" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderForegroundSelected" Color="{ThemeResource SystemColorHighlightTextColor}" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderForegroundPointerOver" Color="{ThemeResource SystemColorHighlightTextColor}" />
+                    <SolidColorBrush x:Key="TabViewItemIconForegroundSelected" Color="{ThemeResource SystemColorHighlightTextColor}" />
+                    <SolidColorBrush x:Key="TabViewSelectedItemBorderBrush" Color="Transparent" />
+                    <Thickness x:Key="TabViewSelectedItemBorderThickness">0</Thickness>
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

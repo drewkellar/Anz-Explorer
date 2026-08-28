@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>AnzExplorer</AssemblyName>
+    <RootNamespace>AnzExplorer.App</RootNamespace>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\AnzExplorer.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AnzExplorer.Contracts\AnzExplorer.Contracts.csproj" />
+    <ProjectReference Include="..\AnzExplorer.Core\AnzExplorer.Core.csproj" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.2.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="Assets\AnzExplorer.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\AnzExplorer.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="BuildIndexer" BeforeTargets="Build">
+    <MSBuild Projects="..\AnzExplorer.Indexer\AnzExplorer.Indexer.csproj"
+             Targets="Build"
+             Properties="Configuration=$(Configuration);Platform=$(Platform)" />
+  </Target>
+  <Target Name="CopyIndexerOutput" AfterTargets="Build">
+    <PropertyGroup>
+      <IndexerOutput>$(MSBuildThisFileDirectory)..\AnzExplorer.Indexer\bin\$(Platform)\$(Configuration)\$(TargetFramework)\$(RuntimeIdentifier)\</IndexerOutput>
+    </PropertyGroup>
+    <ItemGroup>
+      <IndexerFiles Include="$(IndexerOutput)**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(IndexerFiles)"
+          DestinationFiles="@(IndexerFiles->'$(OutDir)%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+</Project>
