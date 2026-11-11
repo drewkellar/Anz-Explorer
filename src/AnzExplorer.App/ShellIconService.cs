@@ -55,7 +55,9 @@ internal sealed class ShellIconService
             using var thumbnail = await file.GetThumbnailAsync(
                     ThumbnailMode.ListView,
                     requestedSize,
-                    ThumbnailOptions.UseCurrentScale | ThumbnailOptions.ResizeThumbnail)
+                    // UseCurrentScale and ResizeThumbnail are mutually exclusive; combining them
+                    // made every request throw, so file-type icons never loaded.
+                    ThumbnailOptions.UseCurrentScale)
                 .AsTask()
                 .WaitAsync(ShellRequestTimeout);
 

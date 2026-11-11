@@ -49,6 +49,17 @@ if (args is ["--scan", var diagnosticPath])
     return;
 }
 
+// Logging starts after the one-shot --scan probe so that probe never leaves an "unclean" session.
+try
+{
+    DiagnosticLog.Initialize(paths.LogDirectory, "indexer");
+    DiagnosticLog.HookProcessExceptions();
+}
+catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+{
+    // Logging is optional for the worker.
+}
+
 var parentArgumentIndex = Array.IndexOf(args, "--parent");
 if (parentArgumentIndex >= 0
     && parentArgumentIndex + 1 < args.Length
@@ -78,6 +89,8 @@ while (!shutdown.IsCancellationRequested)
     }
 }
 
+DiagnosticLog.Current?.EndSession();
+
 async Task HandleAsync(NamedPipeServerStream pipe)
 {
     await using (pipe)
@@ -104,6 +117,7 @@ async Task HandleAsync(NamedPipeServerStream pipe)
         }
         catch (Exception exception)
         {
+            DiagnosticLog.Warn("Indexer", $"Request {request?.GetType().Name ?? "(unread)"} failed", exception);
             response = new IndexResponse(request?.RequestId ?? Guid.Empty, false, null, exception.Message);
         }
 

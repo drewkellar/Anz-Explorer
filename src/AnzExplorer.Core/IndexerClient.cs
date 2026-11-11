@@ -86,6 +86,9 @@ public sealed class IndexerClient : IAsyncDisposable
             // Without this, every queued folder would wait the full connect timeout before
             // falling back. Back off, and restart the worker if it has exited.
             Interlocked.Exchange(ref _unavailableUntil, Environment.TickCount64 + (long)_retryDelay.TotalMilliseconds);
+            DiagnosticLog.Warn(
+                "Indexer",
+                $"Worker connect timed out (workerRunning={_worker is { HasExited: false }}); using in-process scans for {_retryDelay.TotalSeconds:0}s");
             if (_workerPath is not null)
             {
                 try { EnsureWorkerStarted(); }

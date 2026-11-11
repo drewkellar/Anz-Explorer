@@ -31,15 +31,35 @@ public partial class App : Application
 
     public App()
     {
+        // Start logging before anything else so even startup failures leave a trail.
+        try
+        {
+            var paths = new Core.AppPaths();
+            paths.EnsureCreated();
+            Core.DiagnosticLog.Initialize(paths.LogDirectory, "app");
+            Core.DiagnosticLog.HookProcessExceptions();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // The app must still run when its log folder is unavailable.
+        }
+
         InitializeComponent();
         UnhandledException += OnUnhandledException;
+        DebugSettings.BindingFailed += (_, args) =>
+            Core.DiagnosticLog.Warn("Binding", args.Message);
+        DebugSettings.XamlResourceReferenceFailed += (_, args) =>
+            Core.DiagnosticLog.Warn("XamlResource", args.Message);
     }
+
+    internal static string? LogDirectory => Core.DiagnosticLog.Current?.LogDirectory;
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         var requestedPath = Environment.GetCommandLineArgs()
             .Skip(1)
             .FirstOrDefault(path => path == SpecialLocations.ThisPc || Directory.Exists(path));
+        Core.DiagnosticLog.Info("App", $"Launched; requested={Core.DiagnosticLogger.DescribePath(requestedPath)}");
         CreateWindow(requestedPath);
     }
 
@@ -51,6 +71,7 @@ public partial class App : Application
     {
         var window = new MainWindow(requestedPath, startEmpty, tearOutSource);
         _windows.Add(window);
+        Core.DiagnosticLog.Info("Window", $"Created W{window.DiagnosticId} (open={_windows.Count}, startEmpty={startEmpty}, tearOut={tearOutSource is not null})");
         window.Closed += Window_Closed;
         if (activate) window.Activate();
         return window;
@@ -58,9 +79,16 @@ public partial class App : Application
 
     private async void Window_Closed(object sender, WindowEventArgs args)
     {
-        if (sender is MainWindow window) _windows.Remove(window);
+        if (sender is MainWindow window)
+        {
+            _windows.Remove(window);
+            Core.DiagnosticLog.Info("Window", $"Closed W{window.DiagnosticId} (open={_windows.Count})");
+        }
         if (_windows.Count == 0)
         {
+            // Mark a clean end before awaiting: the process can exit as soon as the last
+            // window closes, and a missing marker would be reported as a crash next launch.
+            Core.DiagnosticLog.Current?.EndSession();
             await Indexer.DisposeAsync();
         }
     }
@@ -109,16 +137,8 @@ public partial class App : Application
 
     private static void OnUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs args)
     {
-        try
-        {
-            var paths = new Core.AppPaths();
-            paths.EnsureCreated();
-            var logPath = Path.Combine(paths.LogDirectory, $"crash-{DateTime.UtcNow:yyyyMMdd-HHmmss}.log");
-            File.WriteAllText(logPath, args.Exception.ToString());
-        }
-        catch (Exception)
-        {
-            // Crash logging must never cause a second failure.
-        }
+        // args.Message often carries XAML's own description, which args.Exception lacks.
+        Core.DiagnosticLog.Current?.WriteCrashReport(
+            $"XAML UnhandledException: {args.Message}", args.Exception);
     }
 }

@@ -44,4 +44,11 @@ An optional per-user “Open in Anz Explorer” context-menu entry can be instal
 
 ## Local data
 
-Settings, backups, logs, and the folder-size database live under `%LOCALAPPDATA%\Anz Explorer`. Paths are not written to logs during normal operation. Removing that directory resets local state.
+Settings, backups, logs, and the folder-size database live under `%LOCALAPPDATA%\Anz Explorer`. Removing that directory resets local state.
+
+Diagnostic logs are in the `logs` folder (also reachable from **Settings → Open diagnostic logs folder**):
+
+- `app-session-*.log` / `indexer-session-*.log`: a breadcrumb trail of actions, timings, warnings and first-chance exceptions, flushed line by line so it survives native crashes. The last 10 sessions are kept. A session without the final `=== Session ended normally` line ended in a crash or kill, and the next launch logs a warning naming it.
+- `app-crash-*.log`: full exception details plus the last 300 breadcrumbs, written when a managed crash is caught. The last 20 are kept.
+
+Breadcrumbs never contain file or folder names: paths are recorded by shape only (for example `local(C:) depth=3`), and path-like text in error messages is replaced with `<path>`. Crash reports keep the full exception text needed for diagnosis.

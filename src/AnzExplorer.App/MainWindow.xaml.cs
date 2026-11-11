@@ -90,6 +90,16 @@ public sealed partial class MainWindow : Window
     private bool _addressEditActive;
     private bool _restoringTabSearch;
     private MainWindow? _tearOutSource;
+    private static int _nextDiagnosticId;
+
+    /// <summary>Short per-process window number used to tell windows apart in the diagnostic log.</summary>
+    internal int DiagnosticId { get; } = Interlocked.Increment(ref _nextDiagnosticId);
+
+    // Breadcrumbs record what the user did, never which file: paths are logged by shape only.
+    private void Breadcrumb(string action, string? detail = null) =>
+        DiagnosticLog.Info("UI", detail is null ? $"W{DiagnosticId} {action}" : $"W{DiagnosticId} {action}: {detail}");
+
+    private static string Shape(string? path) => DiagnosticLogger.DescribePath(path);
 
     public MainWindow(string? requestedPath, bool startEmpty = false, MainWindow? tearOutSource = null)
     {
@@ -236,6 +246,7 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception exception)
         {
+            DiagnosticLog.Error("UI", $"W{DiagnosticId} Initialization failed", exception);
             await ShowErrorAsync("Anz Explorer could not restore its previous state.", exception);
             AddTab(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), true);
         }
@@ -437,6 +448,7 @@ public sealed partial class MainWindow : Window
 
     private void AddTab(TabSession session, bool select)
     {
+        Breadcrumb("Add tab", $"{Shape(session.CurrentPath)} select={select} tabs={Tabs.TabItems.Count + 1}");
         var runtime = new TabRuntime(session, this);
         runtime.FileList = CreateFileList(runtime);
         var item = new TabViewItem
@@ -717,6 +729,9 @@ public sealed partial class MainWindow : Window
             path = SpecialLocations.ThisPc;
         }
 
+        var navigationTimer = Stopwatch.StartNew();
+        Breadcrumb("Navigate", $"{Shape(path)} addHistory={addHistory} search={!string.IsNullOrEmpty(SearchBox.Text)}");
+
         string canonical = SpecialLocations.ThisPc;
         if (path != SpecialLocations.ThisPc)
         {
@@ -806,6 +821,7 @@ public sealed partial class MainWindow : Window
 
             tab.LoadedPath = canonical;
             tab.LoadedSearch = SearchBox.Text;
+            Breadcrumb("Navigate done", $"items={entries.Count} in {navigationTimer.ElapsedMilliseconds} ms");
 
             UpdateStatusText();
             UpdateEmptyFolderState();
@@ -821,6 +837,7 @@ public sealed partial class MainWindow : Window
         catch (OperationCanceledException)
         {
             // A newer navigation superseded this request.
+            Breadcrumb("Navigate superseded", $"after {navigationTimer.ElapsedMilliseconds} ms");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -856,6 +873,7 @@ public sealed partial class MainWindow : Window
                 ? SortDirection.Descending
                 : SortDirection.Ascending;
         tab.Session = tab.Session with { SortProperty = property, SortDirection = direction };
+        Breadcrumb("Sort (header)", $"{property} {direction} items={tab.Items.Count}");
         UpdateSortIndicators();
         ApplyCurrentSort();
         await SaveStateAsync();
@@ -1029,6 +1047,10 @@ public sealed partial class MainWindow : Window
             {
                 // Worker missing, backing off, or returned a bad frame: scan in-process
                 // rather than leaving the row stuck on "Calculating…".
+                if (exception is not IOException || !_indexer.IsTemporarilyUnavailable)
+                {
+                    DiagnosticLog.Warn("FolderSize", "Indexer request failed; scanning in-process", exception);
+                }
                 result = await _fallbackScanner.ScanAsync(item.Path, cancellationToken: cancellationToken);
             }
 
@@ -1059,6 +1081,7 @@ public sealed partial class MainWindow : Window
     {
         if (args.InvokedItemContainer?.Tag is SidebarItem item)
         {
+            Breadcrumb("Sidebar click", item.TargetType.ToString());
             await NavigateAsync(item.Target);
         }
     }
@@ -1073,6 +1096,7 @@ public sealed partial class MainWindow : Window
         }
 
         if (ActiveTab is not { } tab) return;
+        Breadcrumb("Select tab", $"index={Tabs.SelectedIndex} tabs={Tabs.TabItems.Count} initializing={_initializing}");
         _searchCancellation?.Cancel();
         EndControlledDragScrolling();
         _pendingDropDestination = null;
@@ -1202,6 +1226,7 @@ public sealed partial class MainWindow : Window
 
     private async void Tabs_TabCloseRequested(TabView sender, TabViewTabCloseRequestedEventArgs args)
     {
+        Breadcrumb("Close tab", $"index={sender.TabItems.IndexOf(args.Tab)} tabs={sender.TabItems.Count}");
         if (sender.TabItems.Count == 1)
         {
             Close();
@@ -1343,6 +1368,8 @@ public sealed partial class MainWindow : Window
     {
         var app = (App)Application.Current;
         var targetWindow = app.FindWindowAtTabStrip(screenPoint, this);
+        Breadcrumb("Tab drop", ReferenceEquals(targetWindow, this) ? "reorder"
+            : targetWindow is not null ? $"merge into W{targetWindow.DiagnosticId}" : "tear out to new window");
         if (ReferenceEquals(targetWindow, this))
         {
             ReorderTab(tab, GetTabDropIndex(screenPoint));
@@ -1363,6 +1390,7 @@ public sealed partial class MainWindow : Window
             }
             else
             {
+                DiagnosticLog.Warn("UI", $"W{DiagnosticId} Tab merge failed");
                 StatusText.Text = "The tab could not be combined with that window.";
             }
             return;
@@ -1373,6 +1401,7 @@ public sealed partial class MainWindow : Window
         newWindow.PrepareForCompletedTearOut(AppWindow.Position, AppWindow.Size);
         if (!TransferTabTo(this, newWindow, ref tab, 0))
         {
+            DiagnosticLog.Warn("UI", $"W{DiagnosticId} Tab tear-out failed");
             StatusText.Text = "The tab could not be moved to a new window.";
             newWindow._suppressStateSaveOnClose = true;
             newWindow.Close();
@@ -1491,8 +1520,9 @@ public sealed partial class MainWindow : Window
             target.UpdateTabSelectionPresentation();
             return true;
         }
-        catch (Exception)
+        catch (Exception transferError)
         {
+            DiagnosticLog.Error("UI", $"Tab transfer W{source.DiagnosticId} -> W{target.DiagnosticId} failed; rolling back", transferError);
             try
             {
                 if (target.ContainsTab(replacement)) target.Tabs.TabItems.Remove(replacement);
@@ -1506,9 +1536,10 @@ public sealed partial class MainWindow : Window
                 source.Tabs.SelectedItem = originalTab;
                 tab = originalTab;
             }
-            catch (Exception)
+            catch (Exception rollbackError)
             {
                 // Keep this routed event from taking down the app if WinUI rejects reparenting.
+                DiagnosticLog.Error("UI", "Tab transfer rollback failed", rollbackError);
             }
             return false;
         }
@@ -1888,6 +1919,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        Breadcrumb("File drag start", $"items={sources.Length} folders={sources.Count(source => source.IsFolder)}");
         _draggedItems = sources;
         _fileDragSourceList = sender as ListView;
         _fileDragSourceTab = ActiveTab;
@@ -1933,6 +1965,7 @@ public sealed partial class MainWindow : Window
 
     private async void FileList_DragItemsCompleted(object sender, DragItemsCompletedEventArgs args)
     {
+        Breadcrumb("File drag end", $"result={args.DropResult} handledInApp={_dropHandledInApp}");
         EndControlledDragScrolling();
         _tabHoverTimer.Stop();
         _hoveredDropTab = null;
@@ -1976,8 +2009,9 @@ public sealed partial class MainWindow : Window
             e.DragUIOverride.IsGlyphVisible = true;
             e.Handled = true;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            DiagnosticLog.Warn("UI", $"W{DiagnosticId} File list drag-over rejected", exception);
             _pendingDropDestination = null;
             e.AcceptedOperation = DataPackageOperation.None;
             StatusText.Text = "This item cannot be dropped here.";
@@ -2282,8 +2316,9 @@ public sealed partial class MainWindow : Window
             e.DragUIOverride.IsCaptionVisible = true;
             e.DragUIOverride.IsGlyphVisible = true;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            DiagnosticLog.Warn("UI", $"W{DiagnosticId} Row drag-over rejected", exception);
             RejectDrop(e);
             StatusText.Text = "This item cannot be dropped here.";
         }
@@ -2428,6 +2463,7 @@ public sealed partial class MainWindow : Window
         _hoveredDropTab = null;
         var sourceTab = _fileDragSourceTab;
         var draggedItems = _draggedItems.ToArray();
+        Breadcrumb("Drop", $"{operation} internalItems={draggedItems.Length} to {Shape(destination)}");
         StatusText.Text = $"{(operation == DataPackageOperation.Move ? "Moving" : "Copying")} items…";
         try
         {
@@ -2526,6 +2562,7 @@ public sealed partial class MainWindow : Window
     private async void OpenWithApplication_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not MenuFlyoutItem { Tag: OpenWithRequest request }) return;
+        Breadcrumb("Open with", Path.GetFileName(request.Application.ExecutablePath));
         try
         {
             OpenWithService.Open(request.Application, request.Path);
@@ -2564,6 +2601,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        Breadcrumb("Open file", $"ext={Path.GetExtension(selected.Path).ToLowerInvariant()}");
         try
         {
             Process.Start(new ProcessStartInfo(selected.Path) { UseShellExecute = true });
@@ -2630,6 +2668,7 @@ public sealed partial class MainWindow : Window
     private async void NewFolder_Click(object sender, RoutedEventArgs e)
     {
         if (!CanMutateCurrentFolder()) return;
+        Breadcrumb("New folder");
         var name = await PromptAsync("New folder", "Name", "New folder");
         if (string.IsNullOrWhiteSpace(name)) return;
         if (!IsValidLeafName(name))
@@ -2664,6 +2703,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        Breadcrumb("New file", kind.ToString());
         var (title, defaultName, extension) = kind switch
         {
             NewFileKind.AutoHotkey => ("New AutoHotkey Script", "New AutoHotkey Script.ahk", ".ahk"),
@@ -2711,6 +2751,7 @@ public sealed partial class MainWindow : Window
     private async void NewShortcut_Click(object sender, RoutedEventArgs e)
     {
         if (!CanMutateCurrentFolder()) return;
+        Breadcrumb("New shortcut");
         var target = await PromptAsync("New shortcut", "Target location", string.Empty);
         if (string.IsNullOrWhiteSpace(target)) return;
         target = Environment.ExpandEnvironmentVariables(target.Trim().Trim('"'));
@@ -2798,6 +2839,7 @@ public sealed partial class MainWindow : Window
             .Where(item => !item.IsDrive)
             .ToArray();
         if (selected.Length == 0) return;
+        Breadcrumb(operation == DataPackageOperation.Move ? "Cut" : "Copy", $"items={selected.Length}");
         try
         {
             await FileTransferService.PutOnClipboardAsync(selected, operation);
@@ -2820,6 +2862,7 @@ public sealed partial class MainWindow : Window
             .ToArray();
         if (selected.Length == 0) return;
 
+        Breadcrumb("Duplicate", $"items={selected.Length}");
         StatusText.Text = "Duplicating items…";
         try
         {
@@ -2847,6 +2890,7 @@ public sealed partial class MainWindow : Window
     {
         var tab = ActiveTab;
         if (tab is null || !CanMutateCurrentFolder()) return;
+        Breadcrumb("Paste", $"to {Shape(tab.Session.CurrentPath)}");
         StatusText.Text = "Pasting…";
         try
         {
@@ -2871,6 +2915,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        Breadcrumb("Rename", selected.IsFolder ? "folder" : "file");
         var name = await PromptAsync("Rename", "New name", selected.Name);
         if (string.IsNullOrWhiteSpace(name) || name == selected.Name) return;
         if (!IsValidLeafName(name))
@@ -2901,6 +2946,7 @@ public sealed partial class MainWindow : Window
             .Where(item => !item.IsDrive)
             .ToArray();
         if (selected.Length == 0) return;
+        Breadcrumb("Delete", $"items={selected.Length} permanent={permanent}");
         if (permanent || _settings.ConfirmRecycleBinDeletes)
         {
             var action = permanent ? "permanently delete" : "move to the Recycle Bin";
@@ -3018,6 +3064,28 @@ public sealed partial class MainWindow : Window
         });
         content.Children.Add(confirmRecycleBinDeletesToggle);
         content.Children.Add(deleteDescription);
+        content.Children.Add(new Border
+        {
+            Height = 1,
+            Margin = new Thickness(0, 4, 0, 4),
+            Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AnzBorderBrush"]
+        });
+        var openLogsButton = new Button { Content = "Open diagnostic logs folder" };
+        openLogsButton.Click += (_, _) =>
+        {
+            if (App.LogDirectory is { } directory && Directory.Exists(directory))
+            {
+                Process.Start(new ProcessStartInfo("explorer.exe", $"\"{directory}\"") { UseShellExecute = true });
+            }
+        };
+        content.Children.Add(openLogsButton);
+        content.Children.Add(new TextBlock
+        {
+            Text = "Logs record actions and errors to help diagnose crashes. File and folder names are not recorded; crash reports include error details.",
+            TextWrapping = TextWrapping.Wrap,
+            Opacity = 0.72,
+            MaxWidth = 420
+        });
         var dialog = new ContentDialog
         {
             XamlRoot = Content.XamlRoot,
@@ -3028,7 +3096,9 @@ public sealed partial class MainWindow : Window
             DefaultButton = ContentDialogButton.Primary
         };
 
+        Breadcrumb("Settings opened");
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        Breadcrumb("Settings saved", $"restoreTabs={restoreTabsToggle.IsOn} confirmRecycle={confirmRecycleBinDeletesToggle.IsOn}");
         ((App)Application.Current).ApplyRestoreTabsPreference(restoreTabsToggle.IsOn);
         ((App)Application.Current).ApplyRecycleBinDeleteConfirmationPreference(confirmRecycleBinDeletesToggle.IsOn);
         await SaveStateAsync();
@@ -3044,6 +3114,7 @@ public sealed partial class MainWindow : Window
     {
         if (FileList.SelectedItem is FileSystemItemViewModel selected)
         {
+            Breadcrumb("Properties", selected.IsFolder ? "folder" : "file");
             ShellProperties.Show(selected.Path);
         }
     }
@@ -3055,6 +3126,7 @@ public sealed partial class MainWindow : Window
             .Where(item => !item.IsDrive)
             .ToArray();
         if (selection.Length == 0 || !CanMutateCurrentFolder()) return;
+        Breadcrumb("Compress to ZIP", $"items={selection.Length}");
 
         StatusText.Text = selection.Length == 1
             ? $"Compressing {selection[0].Name}…"
@@ -3090,7 +3162,9 @@ public sealed partial class MainWindow : Window
             Position = position,
             Placement = FlyoutPlacementMode.Auto
         };
-        if (GetFileItemAtPoint(position) is { } item)
+        var hitItem = GetFileItemAtPoint(position);
+        Breadcrumb("Context menu", hitItem is null ? "background" : hitItem.IsFolder ? "folder" : "file");
+        if (hitItem is { } item)
         {
             if (!FileList.SelectedItems.Contains(item))
             {
@@ -3208,6 +3282,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        Breadcrumb("View mode", mode.ToString());
         tab.Session = tab.Session with { ViewMode = mode, ScrollOffset = 0 };
         tab.AppliedViewMode = null;
         ApplyViewMode(tab);
@@ -3225,6 +3300,7 @@ public sealed partial class MainWindow : Window
     {
         var requested = Math.Round((DisplayScale.Scale + change) * 10, MidpointRounding.AwayFromZero) / 10;
         DisplayScale.Scale = Math.Clamp(requested, MinimumDisplayScale, MaximumDisplayScale);
+        Breadcrumb("Zoom", $"{DisplayScale.Scale:0.0}");
         _settings = _settings with { DisplayScale = DisplayScale.Scale };
         UpdateZoomCommandState();
         await SaveStateAsync();
@@ -3276,6 +3352,7 @@ public sealed partial class MainWindow : Window
     {
         if (ActiveTab is not { } tab) return;
         tab.Session = tab.Session with { SortProperty = property, SortDirection = direction };
+        Breadcrumb("Sort (menu)", $"{property} {direction} items={tab.Items.Count}");
         UpdateSortIndicators();
         ApplyCurrentSort();
         await SaveStateAsync();
@@ -3371,6 +3448,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        Breadcrumb("Pin to sidebar", Shape(selected.Path));
         EnsurePinnedGroup();
         var group = _sidebarGroups[0];
         var items = group.Items.ToList();
@@ -3454,6 +3532,7 @@ public sealed partial class MainWindow : Window
     private async void SidebarUnpin_Click(object sender, RoutedEventArgs e)
     {
         if ((sender as MenuFlyoutItem)?.Tag is not SidebarItem item) return;
+        Breadcrumb("Unpin from sidebar");
         MutateSidebarItem(item.Id, (_, items, index) => items.RemoveAt(index));
         CommitSidebarChange();
         await SaveStateAsync();
@@ -3510,6 +3589,11 @@ public sealed partial class MainWindow : Window
         var control = IsKeyDown(VirtualKey.Control);
         var alt = IsKeyDown(VirtualKey.Menu);
         var shift = IsKeyDown(VirtualKey.Shift);
+        // Logged before acting, so a crash inside the command still leaves the key in the log.
+        if (control || alt || e.Key is VirtualKey.F2 or VirtualKey.F5 or VirtualKey.Delete or VirtualKey.Enter)
+        {
+            Breadcrumb("Key", $"{(control ? "Ctrl+" : "")}{(alt ? "Alt+" : "")}{(shift ? "Shift+" : "")}{e.Key}");
+        }
 
         if (control && e.Key == VirtualKey.L)
         {
@@ -3625,6 +3709,7 @@ public sealed partial class MainWindow : Window
 
     private async Task ShowErrorAsync(string title, Exception exception)
     {
+        DiagnosticLog.Warn("UI", $"W{DiagnosticId} Error dialog: {title}", exception);
         var dialog = new ContentDialog
         {
             XamlRoot = Content.XamlRoot,
@@ -3661,12 +3746,14 @@ public sealed partial class MainWindow : Window
         {
             // SaveStateAsync is awaited from many async void handlers. A transient lock
             // (antivirus, sync tools) must not take down the app; the next save retries.
+            DiagnosticLog.Warn("Settings", "Save failed", exception);
             StatusText.Text = "Settings could not be saved. They will be saved on the next change.";
         }
     }
 
     private async void MainWindow_Closed(object sender, WindowEventArgs args)
     {
+        Breadcrumb("Closing", $"tabs={Tabs.TabItems.Count} saveState={!_suppressStateSaveOnClose}");
         _driveRefreshTimer.Stop();
         _navigationCancellation?.Cancel();
         _searchCancellation?.Cancel();
@@ -3692,6 +3779,7 @@ public sealed partial class MainWindow : Window
             var previousSignature = string.Join('|', _drives.Select(DriveSignature));
             var refreshedSignature = string.Join('|', refreshed.Select(DriveSignature));
             if (previousSignature == refreshedSignature) return;
+            Breadcrumb("Drives changed", $"count={refreshed.Count} ready={refreshed.Count(drive => drive.IsReady)}");
             _drives = refreshed;
             RebuildSidebar();
             if (ActiveTab?.Session.CurrentPath == SpecialLocations.ThisPc)
