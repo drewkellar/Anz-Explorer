@@ -8,7 +8,6 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
-using Microsoft.VisualBasic.FileIO;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.System;
 using Windows.UI.Core;
@@ -48,16 +47,21 @@ public sealed partial class MainWindow : Window
     private readonly ObservableCollection<FileSystemItemViewModel> _emptyItems = [];
     private readonly DispatcherTimer _driveRefreshTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private readonly DispatcherTimer _dragScrollTimer = new() { Interval = TimeSpan.FromMilliseconds(75) };
-    private readonly DispatcherTimer _tabHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(650) };
+    private readonly DispatcherTimer _tabHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(350) };
     private readonly string? _requestedPath;
     private ExplorerSettings _settings = new();
-    private List<SidebarGroup> _sidebarGroups = [];
+    // Sidebar state is owned by App so every window edits and saves the same list.
+    private List<SidebarGroup> _sidebarGroups => ((App)Application.Current).SidebarGroups;
     private CancellationTokenSource? _navigationCancellation;
     private CancellationTokenSource? _searchCancellation;
     private bool _initializing = true;
+    // False if settings could not be read; saving defaults then would erase the user's file.
+    private bool _settingsLoaded;
     private bool _driveRefreshRunning;
     private IReadOnlyList<DriveDescriptor> _drives = [];
     private IReadOnlyList<FileSystemItemViewModel> _draggedItems = [];
+    private ListView? _fileDragSourceList;
+    private TabRuntime? _fileDragSourceTab;
     private ScrollViewer? _fileScrollViewer;
     private Windows.Foundation.Point? _dragPosition;
     private ScrollMode _previousVerticalScrollMode = ScrollMode.Enabled;
@@ -84,14 +88,23 @@ public sealed partial class MainWindow : Window
     private readonly Task _initializationTask;
     private bool _primaryFileListAssigned;
     private bool _addressEditActive;
+    private bool _restoringTabSearch;
+    private MainWindow? _tearOutSource;
 
-    public MainWindow(string? requestedPath, bool startEmpty = false)
+    public MainWindow(string? requestedPath, bool startEmpty = false, MainWindow? tearOutSource = null)
     {
+        _tearOutSource = tearOutSource;
         _requestedPath = requestedPath;
         _startEmpty = startEmpty;
         _indexer = ((App)Application.Current).Indexer;
         _settingsStore = new AtomicJsonSettingsStore(_paths);
         InitializeComponent();
+        // TabView's internal list can handle drag events before TabViewItem.
+        // Route file drags by header bounds after those internal handlers run.
+        RootLayout.AddHandler(UIElement.DragOverEvent,
+            new DragEventHandler(TabStripFile_DragOver), handledEventsToo: true);
+        RootLayout.AddHandler(UIElement.DropEvent,
+            new DragEventHandler(TabStripFile_Drop), handledEventsToo: true);
         FileViewHost.AddHandler(
             UIElement.PointerPressedEvent,
             new PointerEventHandler(FileViewHost_PointerPressed),
@@ -162,12 +175,17 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            _settings = await _settingsStore.LoadAsync();
+            _settings = _tearOutSource?._settings ?? await _settingsStore.LoadAsync();
+            _settingsLoaded = true;
+            foreach (var preference in _settings.FolderSortPreferences)
+                ((App)Application.Current).FolderSortPreferences.TryAdd(preference.Path, preference);
             ColumnLayout.Apply(_settings.DetailsColumnWidths);
             DisplayScale.Scale = _settings.DisplayScale;
             UpdateZoomCommandState();
-            _sidebarGroups = _settings.SidebarGroups.OrderBy(group => group.Order).ToList();
-            _drives = await Task.Run(DriveService.GetAvailableDrives);
+            // The first window seeds the shared sidebar; later windows reuse the live
+            // in-memory list so they never resurrect a stale copy from disk.
+            ((App)Application.Current).SeedSidebar(_settings.SidebarGroups);
+            _drives = _tearOutSource?._drives ?? await Task.Run(DriveService.GetAvailableDrives);
             RebuildSidebar();
             _indexer.EnsureWorkerStarted();
 
@@ -223,6 +241,7 @@ public sealed partial class MainWindow : Window
         }
         finally
         {
+            _tearOutSource = null;
             _initializing = false;
             _driveRefreshTimer.Start();
         }
@@ -429,6 +448,7 @@ public sealed partial class MainWindow : Window
             MinWidth = MinimumTabWidth,
             MaxWidth = MaximumTabWidth
         };
+        item.Style = (Style)RootLayout.Resources["ExplorerTabStyle"];
         AttachTabDropHandlers(item);
         Tabs.TabItems.Add(item);
         if (select)
@@ -498,8 +518,14 @@ public sealed partial class MainWindow : Window
             // type icons. Release them when virtualization recycles the row.
             if (item.IsImageFile)
             {
-                item.ShellIcon = null;
-                item.ShellIconLoadRequested = false;
+                // Do not raise binding notifications inside WinUI's recycling
+                // callback. Sorting may realize this same item again immediately.
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (sender.ContainerFromItem(item) is not null) return;
+                    item.ShellIcon = null;
+                    item.ShellIconLoadRequested = false;
+                });
             }
             return;
         }
@@ -509,8 +535,10 @@ public sealed partial class MainWindow : Window
         }
 
         item.ShellIconLoadRequested = true;
+        var container = args.ItemContainer;
         var icon = await _shellIcons.GetIconAsync(item);
-        if (item.IsImageFile && sender.ContainerFromItem(item) is null)
+        if (!ReferenceEquals(sender.ContainerFromItem(item), container)
+            || !ReferenceEquals(container.Content, item))
         {
             item.ShellIconLoadRequested = false;
             return;
@@ -539,9 +567,14 @@ public sealed partial class MainWindow : Window
         {
             if (tabRuntime.FileList is not { } list) continue;
             list.ContextFlyout = null;
-            list.Visibility = ReferenceEquals(tabRuntime, runtime)
+            var active = ReferenceEquals(tabRuntime, runtime);
+            // Keep the native drag source mounted until DragItemsCompleted.
+            // Collapsing it during hover navigation can interrupt WinUI's drag.
+            list.Visibility = active || ReferenceEquals(list, _fileDragSourceList)
                 ? Visibility.Visible
                 : Visibility.Collapsed;
+            list.Opacity = active ? 1 : 0;
+            list.IsHitTestVisible = active;
         }
         if (runtime.FileList is { } activeList)
         {
@@ -650,16 +683,16 @@ public sealed partial class MainWindow : Window
     {
         DetachTabDropHandlers(item);
         item.AllowDrop = true;
-        item.DragOver += ExplorerTab_DragOver;
         item.DragLeave += ExplorerTab_DragLeave;
-        item.Drop += ExplorerTab_Drop;
+        item.PointerEntered += Tab_PointerEntered;
+        item.PointerExited += Tab_PointerExited;
     }
 
     private void DetachTabDropHandlers(TabViewItem item)
     {
-        item.DragOver -= ExplorerTab_DragOver;
         item.DragLeave -= ExplorerTab_DragLeave;
-        item.Drop -= ExplorerTab_Drop;
+        item.PointerEntered -= Tab_PointerEntered;
+        item.PointerExited -= Tab_PointerExited;
     }
 
     internal bool ContainsTab(TabViewItem tab) => Tabs.TabItems.Contains(tab);
@@ -733,6 +766,8 @@ public sealed partial class MainWindow : Window
         }
 
         UpdateAddressBar(canonical);
+        if (((App)Application.Current).FolderSortPreferences.TryGetValue(canonical, out var folderSort))
+            tab.Session = tab.Session with { SortProperty = folderSort.Property, SortDirection = folderSort.Direction };
         SynchronizeSidebarSelection(canonical);
         UpdateSortIndicators();
         UpdateCommandState();
@@ -849,6 +884,8 @@ public sealed partial class MainWindow : Window
     private void ApplyCurrentSort()
     {
         if (ActiveTab is not { } tab) return;
+        ((App)Application.Current).FolderSortPreferences[tab.Session.CurrentPath] = new(
+            tab.Session.CurrentPath, tab.Session.SortProperty, tab.Session.SortDirection);
         var selectedPaths = FileList.SelectedItems
             .Cast<FileSystemItemViewModel>()
             .Select(item => item.Path)
@@ -856,12 +893,21 @@ public sealed partial class MainWindow : Window
         _fileScrollViewer ??= FindDescendant<ScrollViewer>(FileList);
         var offset = _fileScrollViewer?.VerticalOffset;
         var sorted = SortEntries(Items, tab.Session.SortProperty, tab.Session.SortDirection);
-        Items.Clear();
-        for (var index = 0; index < sorted.Count; index++)
+        var list = FileList;
+        var items = tab.Items;
+        // Detach once so WinUI does not process N intermediate collection states
+        // and selection/recycling callbacks while the order is being rebuilt.
+        list.ItemsSource = null;
+        try
         {
-            sorted[index].RowIndex = index;
-            Items.Add(sorted[index]);
+            items.Clear();
+            for (var index = 0; index < sorted.Count; index++)
+            {
+                sorted[index].RowIndex = index;
+                items.Add(sorted[index]);
+            }
         }
+        finally { list.ItemsSource = items; }
 
         RestoreFileViewState(selectedPaths, offset);
     }
@@ -977,8 +1023,12 @@ public sealed partial class MainWindow : Window
             {
                 result = await _indexer.GetFolderSizeAsync(item.Path, cancellationToken: cancellationToken);
             }
-            catch (Exception exception) when (exception is IOException or TimeoutException)
+            catch (Exception exception) when (
+                exception is IOException or TimeoutException or UnauthorizedAccessException
+                    or InvalidDataException or System.Text.Json.JsonException)
             {
+                // Worker missing, backing off, or returned a bad frame: scan in-process
+                // rather than leaving the row stuck on "Calculating…".
                 result = await _fallbackScanner.ScanAsync(item.Path, cancellationToken: cancellationToken);
             }
 
@@ -1023,6 +1073,12 @@ public sealed partial class MainWindow : Window
         }
 
         if (ActiveTab is not { } tab) return;
+        _searchCancellation?.Cancel();
+        EndControlledDragScrolling();
+        _pendingDropDestination = null;
+        _restoringTabSearch = true;
+        SearchBox.Text = tab.LoadedSearch ?? string.Empty;
+        _restoringTabSearch = false;
         ShowTabView(tab);
         if (_initializing) return;
         UpdateAddressBar(tab.Session.CurrentPath);
@@ -1048,34 +1104,49 @@ public sealed partial class MainWindow : Window
         foreach (var item in Tabs.TabItems.OfType<TabViewItem>())
         {
             var isActive = ReferenceEquals(item, selected);
-            item.Opacity = isActive || _accessibilitySettings.HighContrast ? 1 : 0.74;
+            item.Opacity = 1;
+            item.Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources[
+                isActive ? "AnzSurfaceRaisedBrush" : "AnzPaneBackgroundBrush"];
+            item.FontWeight = isActive ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
             Canvas.SetZIndex(item, isActive ? 1 : 0);
         }
-
-        if (selected is not TabViewItem selectedTab
-            || selectedTab.ActualWidth <= 0
-            || selectedTab.ActualHeight <= 0)
-        {
-            ActiveTabIndicator.Visibility = Visibility.Collapsed;
-            return;
-        }
-
-        try
-        {
-            var bounds = selectedTab.TransformToVisual(AppTitleBar).TransformBounds(
-                new Windows.Foundation.Rect(0, 0, selectedTab.ActualWidth, selectedTab.ActualHeight));
-            ActiveTabIndicator.Width = bounds.Width;
-            ActiveTabIndicator.Height = bounds.Height;
-            Canvas.SetLeft(ActiveTabIndicator, bounds.X);
-            Canvas.SetTop(ActiveTabIndicator, bounds.Y);
-            ActiveTabIndicator.Visibility = Visibility.Visible;
-        }
-        catch (ArgumentException)
-        {
-            // A tab can leave the visual tree during close or cross-window transfer.
-            ActiveTabIndicator.Visibility = Visibility.Collapsed;
-        }
+        UpdateTabInputRegions();
     }
+
+    private void UpdateTabInputRegions()
+    {
+        // Keep the current drop target alive through selection changes during a drag.
+        if (FileTabDropSurface.Visibility == Visibility.Visible) return;
+        if (RootLayout.XamlRoot is not { } root) return;
+        var scale = root.RasterizationScale;
+        var rectangles = new List<Windows.Graphics.RectInt32>();
+        FileTabDropSurface.Children.Clear();
+        foreach (var header in Tabs.TabItems.OfType<TabViewItem>())
+        {
+            if (header.ActualWidth <= 0) continue;
+            var bounds = header.TransformToVisual(RootLayout).TransformBounds(
+                new Windows.Foundation.Rect(0, 0, header.ActualWidth, header.ActualHeight));
+            rectangles.Add(new((int)(bounds.X * scale), (int)(bounds.Y * scale),
+                (int)Math.Ceiling(bounds.Width * scale), (int)Math.Ceiling(bounds.Height * scale)));
+            var local = header.TransformToVisual(FileTabDropSurface).TransformBounds(
+                new Windows.Foundation.Rect(0, 0, header.ActualWidth, header.ActualHeight));
+            var target = new Border { Width = local.Width, Height = local.Height,
+                Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent), AllowDrop = true };
+            Canvas.SetLeft(target, local.X);
+            Canvas.SetTop(target, local.Y);
+            FileTabDropSurface.Children.Add(target);
+        }
+        InputNonClientPointerSource.GetForWindowId(AppWindow.Id)
+            .SetRegionRects(NonClientRegionKind.Passthrough, rectangles.ToArray());
+    }
+
+    private void Tab_PointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        if (sender is TabViewItem item && !ReferenceEquals(item, Tabs.SelectedItem))
+            item.Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["AnzSurfaceBrush"];
+    }
+
+    private void Tab_PointerExited(object sender, PointerRoutedEventArgs e) => UpdateTabSelectionPresentation();
 
     private void Tabs_SizeChanged(object sender, SizeChangedEventArgs e) =>
         DispatcherQueue.TryEnqueue(UpdateTabSelectionPresentation);
@@ -1133,7 +1204,8 @@ public sealed partial class MainWindow : Window
     {
         if (sender.TabItems.Count == 1)
         {
-            AddTab(ResolveHomePath(), false);
+            Close();
+            return;
         }
 
         sender.TabItems.Remove(args.Tab);
@@ -1282,7 +1354,7 @@ public sealed partial class MainWindow : Window
         if (targetWindow is not null)
         {
             var insertIndex = targetWindow.GetTabDropIndex(screenPoint);
-            if (TransferTabTo(this, targetWindow, tab, insertIndex))
+            if (TransferTabTo(this, targetWindow, ref tab, insertIndex))
             {
                 targetWindow.Tabs.SelectedItem = tab;
                 targetWindow.Activate();
@@ -1296,10 +1368,10 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var newWindow = app.CreateWindow(startEmpty: true, activate: false);
+        var newWindow = app.CreateWindow(startEmpty: true, activate: false, tearOutSource: this);
         await newWindow._initializationTask;
         newWindow.PrepareForCompletedTearOut(AppWindow.Position, AppWindow.Size);
-        if (!TransferTabTo(this, newWindow, tab, 0))
+        if (!TransferTabTo(this, newWindow, ref tab, 0))
         {
             StatusText.Text = "The tab could not be moved to a new window.";
             newWindow._suppressStateSaveOnClose = true;
@@ -1384,12 +1456,25 @@ public sealed partial class MainWindow : Window
     private static bool TransferTabTo(
         MainWindow source,
         MainWindow target,
-        TabViewItem tab,
+        ref TabViewItem tab,
         int insertIndex)
     {
         if (ReferenceEquals(source, target) || target.ContainsTab(tab)) return false;
         if (!source.ContainsTab(tab) || tab.Tag is not TabRuntime runtime) return false;
 
+        var originalTab = tab;
+        var originalIndex = source.Tabs.TabItems.IndexOf(tab);
+        source.CaptureTabViewState(runtime);
+        var replacement = new TabViewItem
+        {
+            Header = tab.Header,
+            IconSource = new FontIconSource { Glyph = "\uE8B7" },
+            Tag = runtime,
+            IsClosable = true,
+            MinWidth = MinimumTabWidth,
+            MaxWidth = MaximumTabWidth,
+            Style = (Style)target.RootLayout.Resources["ExplorerTabStyle"]
+        };
         source.DetachTabDropHandlers(tab);
         try
         {
@@ -1397,22 +1482,29 @@ public sealed partial class MainWindow : Window
             source.DestroyFileList(runtime);
             runtime.Owner = target;
             runtime.FileList = target.CreateFileList(runtime);
-            target.AttachTabDropHandlers(tab);
+            runtime.ScrollViewer = null;
+            target.AttachTabDropHandlers(replacement);
             target.Tabs.TabItems.Insert(
-                TabTransferTransaction.ClampDropIndex(insertIndex, target.Tabs.TabItems.Count), tab);
+                TabTransferTransaction.ClampDropIndex(insertIndex, target.Tabs.TabItems.Count), replacement);
+            tab = replacement;
+            source.UpdateTabSelectionPresentation();
+            target.UpdateTabSelectionPresentation();
             return true;
         }
         catch (Exception)
         {
             try
             {
-                if (target.ContainsTab(tab)) target.Tabs.TabItems.Remove(tab);
+                if (target.ContainsTab(replacement)) target.Tabs.TabItems.Remove(replacement);
                 target.DestroyFileList(runtime);
-                target.DetachTabDropHandlers(tab);
+                target.DetachTabDropHandlers(replacement);
                 runtime.Owner = source;
                 runtime.FileList = source.CreateFileList(runtime);
-                source.AttachTabDropHandlers(tab);
-                if (!source.ContainsTab(tab)) source.Tabs.TabItems.Add(tab);
+                runtime.ScrollViewer = null;
+                source.AttachTabDropHandlers(originalTab);
+                if (!source.ContainsTab(originalTab)) source.Tabs.TabItems.Insert(Math.Min(originalIndex, source.Tabs.TabItems.Count), originalTab);
+                source.Tabs.SelectedItem = originalTab;
+                tab = originalTab;
             }
             catch (Exception)
             {
@@ -1601,7 +1693,7 @@ public sealed partial class MainWindow : Window
 
     private async void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        if (_initializing || ActiveTab is null)
+        if (_initializing || _restoringTabSearch || ActiveTab is null)
         {
             return;
         }
@@ -1797,6 +1889,13 @@ public sealed partial class MainWindow : Window
         }
 
         _draggedItems = sources;
+        _fileDragSourceList = sender as ListView;
+        _fileDragSourceTab = ActiveTab;
+        UpdateTabInputRegions();
+        FileTabDropSurface.Visibility = Visibility.Visible;
+        // Fix header widths for the gesture, including while selection changes.
+        foreach (var header in Tabs.TabItems.OfType<TabViewItem>())
+            if (header.ActualWidth > 0) header.Width = header.ActualWidth;
         _dropHandledInApp = false;
         _pendingDropDestination = null;
         BeginControlledDragScrolling();
@@ -1835,13 +1934,23 @@ public sealed partial class MainWindow : Window
     private async void FileList_DragItemsCompleted(object sender, DragItemsCompletedEventArgs args)
     {
         EndControlledDragScrolling();
+        _tabHoverTimer.Stop();
+        _hoveredDropTab = null;
+        var sourceTab = _fileDragSourceTab;
+        _fileDragSourceList = null;
+        FileTabDropSurface.Visibility = Visibility.Collapsed;
+        _fileDragSourceTab = null;
+        foreach (var header in Tabs.TabItems.OfType<TabViewItem>())
+            header.ClearValue(FrameworkElement.WidthProperty);
+        if (ActiveTab is { } visibleTab) ShowTabView(visibleTab);
         var handledInApp = _dropHandledInApp;
         _dropHandledInApp = false;
         _pendingDropDestination = null;
         _draggedItems = [];
-        if (!handledInApp && args.DropResult == DataPackageOperation.Move && ActiveTab is { } tab)
+        if (!handledInApp && args.DropResult == DataPackageOperation.Move && sourceTab is { } tab)
         {
-            await NavigateAsync(tab.Session.CurrentPath, false);
+            tab.LoadedPath = null;
+            if (ReferenceEquals(tab, ActiveTab)) await NavigateAsync(tab.Session.CurrentPath, false);
         }
         else
         {
@@ -1851,6 +1960,8 @@ public sealed partial class MainWindow : Window
 
     private void FileList_DragOver(object sender, DragEventArgs e)
     {
+        _tabHoverTimer.Stop();
+        _hoveredDropTab = null;
         try
         {
             BeginControlledDragScrolling();
@@ -1875,13 +1986,13 @@ public sealed partial class MainWindow : Window
 
     private void FileList_DragLeave(object sender, DragEventArgs e)
     {
+        if (!ReferenceEquals(sender, FileList)) return;
         var position = e.GetPosition(FileList);
         if (position.X < 0
             || position.Y < 0
             || position.X > FileList.ActualWidth
             || position.Y > FileList.ActualHeight)
         {
-            e.AcceptedOperation = DataPackageOperation.None;
             _pendingDropDestination = null;
             EndControlledDragScrolling();
         }
@@ -1995,27 +2106,58 @@ public sealed partial class MainWindow : Window
         await CompleteDropAsync(e, destination, operation);
     }
 
+    private TabViewItem? FindFileDropTab(DragEventArgs e)
+    {
+        var stripPosition = e.GetPosition(Tabs);
+        if (stripPosition.X < 0 || stripPosition.Y < 0
+            || stripPosition.X >= Tabs.ActualWidth || stripPosition.Y >= Tabs.ActualHeight)
+            return null;
+        foreach (var header in Tabs.TabItems.OfType<TabViewItem>())
+        {
+            var point = e.GetPosition(header);
+            if (point.X >= 0 && point.Y >= 0
+                && point.X < header.ActualWidth && point.Y < header.ActualHeight)
+                return header;
+        }
+        return null;
+    }
+
+    private void TabStripFile_DragOver(object sender, DragEventArgs e)
+    {
+        if (FindFileDropTab(e) is { } tab) ExplorerTab_DragOver(tab, e);
+    }
+
+    private void TabStripFile_Drop(object sender, DragEventArgs e)
+    {
+        if (FindFileDropTab(e) is { } tab) ExplorerTab_Drop(tab, e);
+    }
+
     private void ExplorerTab_DragOver(object sender, DragEventArgs e)
     {
         if (sender is not TabViewItem { Tag: TabRuntime runtime } tab
-            || runtime.Session.CurrentPath == SpecialLocations.ThisPc
-            || !CanAcceptDropAt(e, runtime.Session.CurrentPath))
+            || !ContainsSupportedDropData(e.DataView))
         {
             e.AcceptedOperation = DataPackageOperation.None;
             return;
         }
 
         e.Handled = true;
-        var operation = ResolveDropOperation(e, runtime.Session.CurrentPath);
+        EndControlledDragScrolling();
+        _pendingDropDestination = null;
+        var canDrop = runtime.Session.CurrentPath != SpecialLocations.ThisPc
+            && CanAcceptDropAt(e, runtime.Session.CurrentPath);
+        var operation = canDrop ? ResolveDropOperation(e, runtime.Session.CurrentPath) : DataPackageOperation.None;
         e.AcceptedOperation = operation;
-        e.DragUIOverride.Caption = $"{(operation == DataPackageOperation.Move ? "Move" : "Copy")} to {GetTabTitle(runtime.Session.CurrentPath)}";
+        e.DragUIOverride.Caption = canDrop
+            ? $"{(operation == DataPackageOperation.Move ? "Move" : "Copy")} to {GetTabTitle(runtime.Session.CurrentPath)}"
+            : $"Switch to {GetTabTitle(runtime.Session.CurrentPath)}";
         e.DragUIOverride.IsCaptionVisible = true;
         e.DragUIOverride.IsGlyphVisible = true;
-        if (!ReferenceEquals(Tabs.SelectedItem, tab) && !ReferenceEquals(_hoveredDropTab, tab))
+        if (!ReferenceEquals(Tabs.SelectedItem, tab))
         {
             _tabHoverTimer.Stop();
-            _hoveredDropTab = tab;
-            _tabHoverTimer.Start();
+            _hoveredDropTab = null;
+            Tabs.SelectedItem = tab;
         }
     }
 
@@ -2033,6 +2175,7 @@ public sealed partial class MainWindow : Window
     private async void ExplorerTab_Drop(object sender, DragEventArgs e)
     {
         _tabHoverTimer.Stop();
+        _pendingDropDestination = null;
         _hoveredDropTab = null;
         if (sender is not TabViewItem { Tag: TabRuntime runtime } targetTab
             || runtime.Session.CurrentPath == SpecialLocations.ThisPc
@@ -2054,6 +2197,9 @@ public sealed partial class MainWindow : Window
         _tabHoverTimer.Stop();
         if (_hoveredDropTab is { } tab && Tabs.TabItems.Contains(tab))
         {
+            _hoveredDropTab = null;
+            EndControlledDragScrolling();
+            _pendingDropDestination = null;
             Tabs.SelectedItem = tab;
         }
     }
@@ -2107,6 +2253,8 @@ public sealed partial class MainWindow : Window
 
     private void FileRow_DragOver(object sender, DragEventArgs e)
     {
+        _tabHoverTimer.Stop();
+        _hoveredDropTab = null;
         e.Handled = true;
         try
         {
@@ -2276,17 +2424,31 @@ public sealed partial class MainWindow : Window
         DataPackageOperation operation)
     {
         var deferral = e.GetDeferral();
+        _tabHoverTimer.Stop();
+        _hoveredDropTab = null;
+        var sourceTab = _fileDragSourceTab;
+        var draggedItems = _draggedItems.ToArray();
         StatusText.Text = $"{(operation == DataPackageOperation.Move ? "Moving" : "Copying")} items…";
         try
         {
-            var storageItems = _draggedItems.Count > 0
-                ? await FileTransferService.GetStorageItemsAsync(_draggedItems)
+            var storageItems = draggedItems.Length > 0
+                ? await FileTransferService.GetStorageItemsAsync(draggedItems)
                 : await e.DataView.GetStorageItemsAsync();
             var failures = await FileTransferService.TransferAsync(
                 storageItems,
                 destination,
                 operation,
                 CancellationToken.None);
+
+            // A partial move also changes the source. Re-enumerate when revisited.
+            if (sourceTab is not null) sourceTab.LoadedPath = null;
+            foreach (var header in Tabs.TabItems.OfType<TabViewItem>())
+                if (header.Tag is TabRuntime cached && !ReferenceEquals(cached, ActiveTab)
+                    && cached.Session.CurrentPath != SpecialLocations.ThisPc
+                    && (PathsEqual(cached.Session.CurrentPath, destination)
+                        || draggedItems.Any(item => string.Equals(Path.GetDirectoryName(item.Path),
+                            cached.Session.CurrentPath, StringComparison.OrdinalIgnoreCase))))
+                    cached.LoadedPath = null;
 
             if (ActiveTab is { } tab)
             {
@@ -2772,29 +2934,30 @@ public sealed partial class MainWindow : Window
             }
         }
 
-        var failures = new List<string>();
-        foreach (var item in selected)
+        // One Shell operation on a background STA: the window stays responsive during large
+        // deletes, and cancelling the Shell's error/progress UI is reported, not thrown.
+        var tab = ActiveTab;
+        StatusText.Text = permanent ? "Deleting items…" : "Moving items to the Recycle Bin…";
+        IReadOnlyList<string> failures;
+        try
         {
-            try
-            {
-                if (item.IsFolder)
-                {
-                    if (permanent) Directory.Delete(item.Path, true);
-                    else FileSystem.DeleteDirectory(item.Path, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin);
-                }
-                else
-                {
-                    if (permanent) File.Delete(item.Path);
-                    else FileSystem.DeleteFile(item.Path, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin);
-                }
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                failures.Add(exception.Message);
-            }
+            failures = await ShellTransferEngine.DeleteAsync(
+                selected.Select(item => item.Path), recycle: !permanent, CancellationToken.None);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            failures = [exception.Message];
         }
 
-        await NavigateAsync(ActiveTab!.Session.CurrentPath, false);
+        if (tab is not null)
+        {
+            tab.LoadedPath = null;
+            if (ReferenceEquals(tab, ActiveTab)) await NavigateAsync(tab.Session.CurrentPath, false);
+        }
+        else
+        {
+            UpdateStatusText();
+        }
         if (failures.Count > 0)
         {
             await ShowErrorAsync($"{failures.Count} item(s) could not be deleted.", new IOException(failures[0]));
@@ -3221,7 +3384,7 @@ public sealed partial class MainWindow : Window
             "Folder",
             items.Count));
         _sidebarGroups[0] = group with { Items = items };
-        RebuildSidebar();
+        CommitSidebarChange();
         await SaveStateAsync();
     }
 
@@ -3256,16 +3419,11 @@ public sealed partial class MainWindow : Window
 
     private void SidebarOpenNewWindow_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as MenuFlyoutItem)?.Tag is not SidebarItem item
-            || string.IsNullOrWhiteSpace(Environment.ProcessPath))
-        {
-            return;
-        }
+        if ((sender as MenuFlyoutItem)?.Tag is not SidebarItem item) return;
 
-        Process.Start(new ProcessStartInfo(Environment.ProcessPath, $"\"{item.Target}\"")
-        {
-            UseShellExecute = true
-        });
+        // Open in-process so the window shares sidebar/settings state with this one.
+        // (Launching a second process also mangled quoted drive roots such as "C:\".)
+        ((App)Application.Current).CreateWindow(item.Target);
     }
 
     private static void SidebarCopyPath_Click(object sender, RoutedEventArgs e)
@@ -3297,8 +3455,20 @@ public sealed partial class MainWindow : Window
     {
         if ((sender as MenuFlyoutItem)?.Tag is not SidebarItem item) return;
         MutateSidebarItem(item.Id, (_, items, index) => items.RemoveAt(index));
-        RebuildSidebar();
+        CommitSidebarChange();
         await SaveStateAsync();
+    }
+
+    private void CommitSidebarChange()
+    {
+        RebuildSidebar();
+        ((App)Application.Current).NotifySidebarChanged(this);
+    }
+
+    internal void OnSharedSidebarChanged()
+    {
+        if (_initializing) return;
+        RebuildSidebar();
     }
 
     private void UpdateStatusText()
@@ -3383,7 +3553,12 @@ public sealed partial class MainWindow : Window
         }
         else if (control && e.Key == VirtualKey.W && Tabs.SelectedItem is TabViewItem selected)
         {
-            if (Tabs.TabItems.Count == 1) AddTab(ResolveHomePath(), false);
+            if (Tabs.TabItems.Count == 1)
+            {
+                e.Handled = true;
+                Close();
+                return;
+            }
             Tabs.TabItems.Remove(selected);
             if (selected.Tag is TabRuntime runtime) DestroyFileList(runtime);
             e.Handled = true;
@@ -3463,18 +3638,31 @@ public sealed partial class MainWindow : Window
     private async Task SaveStateAsync()
     {
         await _initializationTask;
+        if (!_settingsLoaded) return;
         var tabs = _settings.RestorePreviousSession
             ? ((App)Application.Current).GetOpenTabSessions()
             : [];
         _settings = _settings with
         {
-            SidebarGroups = _sidebarGroups,
+            SidebarGroups = _sidebarGroups.ToArray(),
             Tabs = tabs,
             ActiveTabId = _settings.RestorePreviousSession ? ActiveTab?.Session.Id : null,
             DetailsColumnWidths = ColumnLayout.ToContract(),
-            DisplayScale = DisplayScale.Scale
+            DisplayScale = DisplayScale.Scale,
+            FolderSortPreferences = ((App)Application.Current).FolderSortPreferences.Values.ToArray()
         };
-        await _settingsStore.SaveAsync(_settings);
+        try
+        {
+            await _settingsStore.SaveAsync(_settings);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException
+                or InvalidDataException or NotSupportedException)
+        {
+            // SaveStateAsync is awaited from many async void handlers. A transient lock
+            // (antivirus, sync tools) must not take down the app; the next save retries.
+            StatusText.Text = "Settings could not be saved. They will be saved on the next change.";
+        }
     }
 
     private async void MainWindow_Closed(object sender, WindowEventArgs args)
@@ -3482,14 +3670,8 @@ public sealed partial class MainWindow : Window
         _driveRefreshTimer.Stop();
         _navigationCancellation?.Cancel();
         _searchCancellation?.Cancel();
-        try
-        {
-            if (!_suppressStateSaveOnClose) await SaveStateAsync();
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            // Closing must not be blocked if state persistence fails.
-        }
+        // SaveStateAsync handles its own persistence failures.
+        if (!_suppressStateSaveOnClose) await SaveStateAsync();
     }
 
     private static string GetTabTitle(string path)

@@ -45,5 +45,32 @@ public static class PipeJsonProtocol
         return JsonSerializer.Deserialize<T>(payload, options)
             ?? throw new InvalidDataException("IPC message contained an empty JSON value.");
     }
+
+    /// <summary>
+    /// For a request/response connection where the client sends one request and then only
+    /// waits: cancels <paramref name="requestCancellation"/> if the client disconnects before
+    /// <paramref name="stopWatching"/> is signalled. Any completed read (normally 0 bytes at
+    /// end-of-stream) means the peer went away.
+    /// </summary>
+    public static async Task CancelOnDisconnectAsync(
+        Stream stream,
+        CancellationTokenSource requestCancellation,
+        CancellationToken stopWatching)
+    {
+        var probe = new byte[1];
+        try
+        {
+            await stream.ReadAsync(probe, stopWatching).ConfigureAwait(false);
+            requestCancellation.Cancel();
+        }
+        catch (OperationCanceledException)
+        {
+            // The work finished first; stop watching.
+        }
+        catch (Exception exception) when (exception is IOException or ObjectDisposedException)
+        {
+            requestCancellation.Cancel();
+        }
+    }
 }
 

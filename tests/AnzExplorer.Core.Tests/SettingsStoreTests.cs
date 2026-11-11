@@ -8,6 +8,25 @@ public sealed class SettingsStoreTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), "AnzExplorerTests", Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task FolderSorting_PersistsWithoutSessionRestoration()
+    {
+        var store = new AtomicJsonSettingsStore(new AppPaths(_root));
+        await store.SaveAsync(new ExplorerSettings
+        {
+            RestorePreviousSession = false,
+            FolderSortPreferences = [
+                new(@"C:\Users\Test\Downloads", "Modified", SortDirection.Descending),
+                new(@"C:\Users\Test\Documents", "Name", SortDirection.Ascending)]
+        });
+        var loaded = await new AtomicJsonSettingsStore(new AppPaths(_root)).LoadAsync();
+        Assert.False(loaded.RestorePreviousSession);
+        Assert.Empty(loaded.Tabs);
+        Assert.Equal("Modified", loaded.FolderSortPreferences[0].Property);
+        Assert.Equal(SortDirection.Descending, loaded.FolderSortPreferences[0].Direction);
+        Assert.Equal(SortDirection.Ascending, loaded.FolderSortPreferences[1].Direction);
+    }
+
+    [Fact]
     public async Task SaveAndLoad_PreservesExplicitSidebarOrder()
     {
         var paths = new AppPaths(_root);
@@ -190,6 +209,72 @@ public sealed class SettingsStoreTests : IDisposable
         var loaded = await stores[0].LoadAsync();
         Assert.StartsWith(@"C:\Home-", loaded.FixedHomePath);
         Assert.True(File.Exists(paths.SettingsBackupPath));
+    }
+
+    [Fact]
+    public async Task Load_FallsBackWhenPrimaryHasDuplicateIds_AndNextSaveKeepsAGoodBackup()
+    {
+        var paths = new AppPaths(_root);
+        var store = new AtomicJsonSettingsStore(paths);
+        await store.SaveAsync(new ExplorerSettings { FixedHomePath = @"C:\Known" });
+        await store.SaveAsync(new ExplorerSettings { FixedHomePath = @"C:\Known" });
+        var id = Guid.NewGuid();
+        await File.WriteAllTextAsync(paths.SettingsPath, $$"""
+            {"schemaVersion":5,"fixedHomePath":"C:\\Bad","sidebarGroups":[
+              {"id":"{{id}}","label":"Pinned","order":0,"isCollapsed":false,"items":[
+                {"id":"{{id}}","label":"Dup","target":"C:\\Dup","targetType":"fileSystemPath","icon":null,"order":0}]}]}
+            """);
+
+        var loaded = await store.LoadAsync();
+        Assert.Equal(@"C:\Known", loaded.FixedHomePath);
+        Assert.Single(Directory.GetFiles(_root, "settings.unreadable-*.json"));
+
+        // Previously the bad primary was rotated into the backup slot here, destroying it.
+        await store.SaveAsync(loaded with { FixedHomePath = @"C:\New" });
+        await File.WriteAllTextAsync(paths.SettingsPath, "not-json");
+        Assert.Equal(@"C:\New", (await store.LoadAsync()).FixedHomePath);
+    }
+
+    [Fact]
+    public async Task Load_TreatsNullCollectionsAsCorruptAndUsesBackup()
+    {
+        var paths = new AppPaths(_root);
+        var store = new AtomicJsonSettingsStore(paths);
+        await store.SaveAsync(new ExplorerSettings { FixedHomePath = @"C:\Known" });
+        await File.WriteAllTextAsync(paths.SettingsPath, """{"schemaVersion":5,"sidebarGroups":null}""");
+
+        var loaded = await store.LoadAsync();
+
+        Assert.Equal(@"C:\Known", loaded.FixedHomePath);
+        Assert.NotNull(loaded.SidebarGroups);
+    }
+
+    [Fact]
+    public async Task Load_PreservesNewerSchemaFileInsteadOfLettingItBeOverwritten()
+    {
+        var paths = new AppPaths(_root);
+        paths.EnsureCreated();
+        const string newer = """{"schemaVersion":99,"fixedHomePath":"C:\\Future"}""";
+        await File.WriteAllTextAsync(paths.SettingsPath, newer);
+
+        var loaded = await new AtomicJsonSettingsStore(paths).LoadAsync();
+        await new AtomicJsonSettingsStore(paths).SaveAsync(loaded);
+
+        Assert.NotEqual(@"C:\Future", loaded.FixedHomePath);
+        var preserved = Assert.Single(Directory.GetFiles(_root, "settings.unreadable-*.json"));
+        Assert.Equal(newer, await File.ReadAllTextAsync(preserved));
+    }
+
+    [Fact]
+    public async Task Load_ThrowsInsteadOfReturningDefaultsWhenFilesAreLocked()
+    {
+        var paths = new AppPaths(_root);
+        var store = new AtomicJsonSettingsStore(paths);
+        await store.SaveAsync(new ExplorerSettings { FixedHomePath = @"C:\Known" });
+        using var primaryLock = new FileStream(paths.SettingsPath, FileMode.Open, FileAccess.Read, FileShare.None);
+        using var backupLock = new FileStream(paths.SettingsBackupPath, FileMode.Open, FileAccess.Read, FileShare.None);
+
+        await Assert.ThrowsAsync<IOException>(() => store.LoadAsync());
     }
 
     public void Dispose()

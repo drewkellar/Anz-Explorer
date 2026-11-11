@@ -11,6 +11,24 @@
 
     <Grid x:Name="RootLayout" Background="{ThemeResource AnzWindowBackgroundBrush}">
         <Grid.Resources>
+            <Style x:Key="ExplorerTabStyle" TargetType="TabViewItem">
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="TabViewItem">
+                            <Grid x:Name="TabContainer" Background="{TemplateBinding Background}" CornerRadius="7" Padding="8,0,4,0" Margin="2,4" Height="32" Control.IsTemplateFocusTarget="True">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="24" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="28" />
+                                </Grid.ColumnDefinitions>
+                                <FontIcon Glyph="&#xE8B7;" FontSize="15" />
+                                <ContentPresenter x:Name="ContentPresenter" Grid.Column="1" Content="" VerticalAlignment="Center" FontSize="12" />
+                                <Button x:Name="CloseButton" Grid.Column="2" Content="&#xE711;" FontFamily="Segoe Fluent Icons" FontSize="10" Padding="4" Background="Transparent" BorderThickness="0" IsTabStop="False" ToolTipService.ToolTip="Close tab (Ctrl+W)" />
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
             <Style x:Key="NavigationButtonStyle" TargetType="Button">
                 <Setter Property="Width" Value="36" />
                 <Setter Property="Height" Value="34" />
@@ -264,6 +282,7 @@
                      CanDragTabs="False"
                      CanTearOutTabs="False"
                      AllowDropTabs="False"
+                     AllowDrop="True"
                      AddTabButtonClick="Tabs_AddTabButtonClick"
                      SizeChanged="Tabs_SizeChanged"
                      SelectionChanged="Tabs_SelectionChanged"
@@ -274,17 +293,7 @@
                           Background="Transparent" />
                 </TabView.TabStripFooter>
             </TabView>
-            <!-- This single foreground outline is authoritative. Even if WinUI
-                 retains an old per-item selected surface, only one tab can carry
-                 the active outline. -->
-            <Canvas Grid.ColumnSpan="2" IsHitTestVisible="False">
-                <Border x:Name="ActiveTabIndicator"
-                        Background="Transparent"
-                        BorderBrush="{ThemeResource AnzActiveTabBorderBrush}"
-                        BorderThickness="2,2,2,3"
-                        CornerRadius="7,7,0,0"
-                        Visibility="Collapsed" />
-            </Canvas>
+            <Canvas x:Name="FileTabDropSurface" Grid.ColumnSpan="2" Visibility="Collapsed" />
             <Border x:Name="TabDropTargetIndicator"
                     Grid.Column="1"
                     Margin="0,2,140,1"

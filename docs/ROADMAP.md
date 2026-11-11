@@ -2,7 +2,7 @@
 
 ## Alpha hardening
 
-- Replace recursive managed copy/move with an `IFileOperation` adapter, with per-item progress, cancellation, collision decisions, undo metadata, and elevation handoff.
+- Copy/move now uses an STA `IFileOperation` adapter with native progress, cancel and collision dialogs, plus serialized transfers. Remaining: an in-app operations panel, detailed per-item skip/error history, app-level undo and cancellation of queued transfers. Cancellation tokens are checked before each source; active transfers are canceled through the native dialog.
 - Add filesystem watchers, cache invalidation, periodic verification, selected-root crawling, pause-on-battery, cache controls, and indexing progress UI.
 - Add sortable column headers, list/icon layouts, thumbnail loading, drag-and-drop, selection/scroll restoration, and type-to-select.
 - Add sidebar group creation, group collapse, alias/icon editing, keyboard reorder, drag reorder, and settings import/export UI.
@@ -21,4 +21,3 @@
 - Add x64 release signing and distribution documentation. ARM64 follows after x64 stabilization.
 
 Full shell replacement, Windows 10, global file-dialog replacement, cloud sync, and default-folder-handler registration remain out of scope for v1.
-

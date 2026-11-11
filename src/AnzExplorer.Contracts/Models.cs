@@ -66,9 +66,11 @@ public sealed record TabSession(
     string? SelectedPath,
     double ScrollOffset);
 
+public sealed record FolderSortPreference(string Path, string Property, SortDirection Direction);
+
 public sealed record ExplorerSettings
 {
-    public const int CurrentSchemaVersion = 4;
+    public const int CurrentSchemaVersion = 5;
 
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public IReadOnlyList<SidebarGroup> SidebarGroups { get; init; } = [];
@@ -81,6 +83,7 @@ public sealed record ExplorerSettings
     public bool PauseIndexingOnBattery { get; init; } = true;
     public DetailsColumnWidths DetailsColumnWidths { get; init; } = new();
     public double DisplayScale { get; init; } = 1.0;
+    public IReadOnlyList<FolderSortPreference> FolderSortPreferences { get; init; } = [];
 }
 
 public sealed record DetailsColumnWidths(

@@ -45,7 +45,8 @@ internal static class FileTransferService
             ? DataPackageOperation.Move
             : DataPackageOperation.Copy;
         var failures = await TransferAsync(sourceItems, destinationDirectory, operation, cancellationToken);
-        if (operation == DataPackageOperation.Move && failures.Count == 0) Clipboard.Clear();
+        // Retain cut data: Shell conflict UI can skip individual items, and the
+        // clipboard may also have been replaced while the transfer was running.
         return failures;
     }
 
@@ -54,7 +55,7 @@ internal static class FileTransferService
         string destinationDirectory,
         DataPackageOperation operation,
         CancellationToken cancellationToken) =>
-        FileTransferEngine.TransferAsync(
+        ShellTransferEngine.TransferAsync(
             sourceItems.Select(item => new FileTransferSource(
                 item.Path,
                 item.Name,

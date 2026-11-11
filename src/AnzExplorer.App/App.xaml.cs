@@ -8,6 +8,26 @@ public partial class App : Application
 {
     private readonly List<MainWindow> _windows = [];
     internal Core.IndexerClient Indexer { get; } = new();
+    internal Dictionary<string, FolderSortPreference> FolderSortPreferences { get; } = new(StringComparer.OrdinalIgnoreCase);
+    // One sidebar for every window. Seeded by the first window that loads settings successfully.
+    internal List<SidebarGroup> SidebarGroups { get; } = [];
+    internal bool SidebarLoaded { get; private set; }
+
+    internal void SeedSidebar(IEnumerable<SidebarGroup> groups)
+    {
+        if (SidebarLoaded) return;
+        SidebarGroups.Clear();
+        SidebarGroups.AddRange(groups.OrderBy(group => group.Order));
+        SidebarLoaded = true;
+    }
+
+    internal void NotifySidebarChanged(MainWindow source)
+    {
+        foreach (var window in _windows)
+        {
+            if (!ReferenceEquals(window, source)) window.OnSharedSidebarChanged();
+        }
+    }
 
     public App()
     {
@@ -26,9 +46,10 @@ public partial class App : Application
     internal MainWindow CreateWindow(
         string? requestedPath = null,
         bool startEmpty = false,
-        bool activate = true)
+        bool activate = true,
+        MainWindow? tearOutSource = null)
     {
-        var window = new MainWindow(requestedPath, startEmpty);
+        var window = new MainWindow(requestedPath, startEmpty, tearOutSource);
         _windows.Add(window);
         window.Closed += Window_Closed;
         if (activate) window.Activate();

@@ -32,6 +32,8 @@ await repository.InitializeAsync(CancellationToken.None);
 var scanner = new FolderSizeScanner();
 var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
 using var shutdown = new CancellationTokenSource();
+// One cold recursive scan at a time across every client and window, to avoid seek contention.
+using var scanGate = new SemaphoreSlim(1, 1);
 var paused = false;
 
 if (args is ["--scan", var diagnosticPath])
@@ -87,7 +89,7 @@ async Task HandleAsync(NamedPipeServerStream pipe)
             request = await PipeJsonProtocol.ReadAsync<IndexRequest>(pipe, jsonOptions, shutdown.Token);
             response = request switch
             {
-                GetFolderSizeRequest sizeRequest => await GetSizeAsync(sizeRequest),
+                GetFolderSizeRequest sizeRequest => await GetSizeForConnectedClientAsync(pipe, sizeRequest),
                 PauseIndexingRequest pauseRequest => Pause(pauseRequest),
                 ResumeIndexingRequest resumeRequest => Resume(resumeRequest),
                 ShutdownRequest shutdownRequest => Shutdown(shutdownRequest),
@@ -95,23 +97,47 @@ async Task HandleAsync(NamedPipeServerStream pipe)
                 _ => new IndexResponse(request.RequestId, false, null, "Request type is not supported.")
             };
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            // Shutdown, or the client disconnected (navigated away). Nobody is waiting.
+            return;
+        }
+        catch (Exception exception)
         {
             response = new IndexResponse(request?.RequestId ?? Guid.Empty, false, null, exception.Message);
         }
 
-        await PipeJsonProtocol.WriteAsync(pipe, response, jsonOptions, CancellationToken.None);
+        try
+        {
+            await PipeJsonProtocol.WriteAsync(pipe, response, jsonOptions, CancellationToken.None);
+        }
+        catch (IOException)
+        {
+            // The client went away between the scan finishing and the reply.
+        }
     }
 }
 
-async Task<IndexResponse> GetSizeAsync(GetFolderSizeRequest request)
+async Task<IndexResponse> GetSizeForConnectedClientAsync(NamedPipeServerStream pipe, GetFolderSizeRequest request)
 {
-    var cached = await repository.GetAsync(request.Path, shutdown.Token);
-    if (cached is { State: FolderSizeState.Complete or FolderSizeState.Partial, LastUpdated: not null }
-        && cached.LastUpdated >= DateTimeOffset.UtcNow - TimeSpan.FromSeconds(30))
+    using var requestCancellation = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
+    using var stopWatching = new CancellationTokenSource();
+    var watcher = PipeJsonProtocol.CancelOnDisconnectAsync(pipe, requestCancellation, stopWatching.Token);
+    try
     {
-        return new IndexResponse(request.RequestId, true, cached, null);
+        return await GetSizeAsync(request, requestCancellation.Token);
     }
+    finally
+    {
+        stopWatching.Cancel();
+        await watcher;
+    }
+}
+
+async Task<IndexResponse> GetSizeAsync(GetFolderSizeRequest request, CancellationToken cancellationToken)
+{
+    var cached = await GetFreshCachedAsync(request.Path, cancellationToken);
+    if (cached is not null) return new IndexResponse(request.RequestId, true, cached, null);
 
     if (paused && !request.HighPriority)
     {
@@ -119,9 +145,30 @@ async Task<IndexResponse> GetSizeAsync(GetFolderSizeRequest request)
         return new IndexResponse(request.RequestId, true, queued, null);
     }
 
-    var result = await scanner.ScanAsync(request.Path, cancellationToken: shutdown.Token);
-    await repository.PutAsync(result, shutdown.Token);
-    return new IndexResponse(request.RequestId, true, result, null);
+    await scanGate.WaitAsync(cancellationToken);
+    try
+    {
+        // Another client may have scanned this folder while we waited.
+        cached = await GetFreshCachedAsync(request.Path, cancellationToken);
+        if (cached is not null) return new IndexResponse(request.RequestId, true, cached, null);
+
+        var result = await scanner.ScanAsync(request.Path, cancellationToken: cancellationToken);
+        await repository.PutAsync(result, shutdown.Token);
+        return new IndexResponse(request.RequestId, true, result, null);
+    }
+    finally
+    {
+        scanGate.Release();
+    }
+}
+
+async Task<FolderSizeResult?> GetFreshCachedAsync(string path, CancellationToken cancellationToken)
+{
+    var cached = await repository.GetAsync(path, cancellationToken);
+    return cached is { State: FolderSizeState.Complete or FolderSizeState.Partial, LastUpdated: not null }
+        && cached.LastUpdated >= DateTimeOffset.UtcNow - TimeSpan.FromSeconds(30)
+            ? cached
+            : null;
 }
 
 IndexResponse Pause(PauseIndexingRequest request)

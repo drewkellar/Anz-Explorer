@@ -16,29 +16,55 @@ public sealed class AtomicJsonSettingsStore(AppPaths paths) : ISettingsStore
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        // A null where the model is non-nullable (e.g. "sidebarGroups": null) is a
+        // corrupt document, not something to surface later as a NullReferenceException.
+        RespectNullableAnnotations = true,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
 
+    private const int ReplaceAttempts = 4;
     private static readonly SemaphoreSlim Gate = new(1, 1);
+
+    private enum LoadOutcome
+    {
+        Loaded,
+        Missing,
+        Unreadable,
+        Unusable
+    }
 
     public async Task<ExplorerSettings> LoadAsync(CancellationToken cancellationToken = default)
     {
         paths.EnsureCreated();
-        var primary = await TryLoadAsync(paths.SettingsPath, cancellationToken).ConfigureAwait(false);
-        if (primary is not null)
+        await Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            Validate(primary);
-            return Migrate(primary);
-        }
+            var (primaryOutcome, primary) = await TryLoadAsync(paths.SettingsPath, cancellationToken)
+                .ConfigureAwait(false);
+            if (primary is not null) return primary;
 
-        var backup = await TryLoadAsync(paths.SettingsBackupPath, cancellationToken).ConfigureAwait(false);
-        if (backup is not null)
+            // An unusable primary must be moved aside. Otherwise the next save's
+            // File.Replace rotates it into the backup slot, destroying the last good copy.
+            if (primaryOutcome == LoadOutcome.Unusable) Quarantine(paths.SettingsPath);
+
+            var (backupOutcome, backup) = await TryLoadAsync(paths.SettingsBackupPath, cancellationToken)
+                .ConfigureAwait(false);
+            if (backup is not null) return backup;
+            if (backupOutcome == LoadOutcome.Unusable) Quarantine(paths.SettingsBackupPath);
+
+            if (primaryOutcome == LoadOutcome.Unreadable || backupOutcome == LoadOutcome.Unreadable)
+            {
+                // The files exist but are locked or inaccessible. Returning defaults would let
+                // the caller overwrite them, so surface the failure instead.
+                throw new IOException("The settings file could not be read.");
+            }
+
+            return CreateDefaults();
+        }
+        finally
         {
-            Validate(backup);
-            return Migrate(backup);
+            Gate.Release();
         }
-
-        return CreateDefaults();
     }
 
     public async Task SaveAsync(ExplorerSettings settings, CancellationToken cancellationToken = default)
@@ -62,14 +88,29 @@ public sealed class AtomicJsonSettingsStore(AppPaths paths) : ISettingsStore
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            if (File.Exists(paths.SettingsPath))
+            for (var attempt = 1; ; attempt++)
             {
-                File.Replace(temporaryPath, paths.SettingsPath, paths.SettingsBackupPath, true);
-            }
-            else
-            {
-                File.Move(temporaryPath, paths.SettingsPath);
-                File.Copy(paths.SettingsPath, paths.SettingsBackupPath, true);
+                try
+                {
+                    if (File.Exists(paths.SettingsPath))
+                    {
+                        File.Replace(temporaryPath, paths.SettingsPath, paths.SettingsBackupPath, true);
+                    }
+                    else
+                    {
+                        File.Move(temporaryPath, paths.SettingsPath);
+                        File.Copy(paths.SettingsPath, paths.SettingsBackupPath, true);
+                    }
+
+                    break;
+                }
+                catch (Exception exception) when (
+                    attempt < ReplaceAttempts && exception is IOException or UnauthorizedAccessException)
+                {
+                    // Antivirus and sync clients briefly open settings.json without
+                    // FILE_SHARE_DELETE; a short retry usually clears the lock.
+                    await Task.Delay(50 * attempt, cancellationToken).ConfigureAwait(false);
+                }
             }
         }
         finally
@@ -108,26 +149,55 @@ public sealed class AtomicJsonSettingsStore(AppPaths paths) : ISettingsStore
         };
     }
 
-    private static async Task<ExplorerSettings?> TryLoadAsync(string path, CancellationToken cancellationToken)
+    private static async Task<(LoadOutcome Outcome, ExplorerSettings? Settings)> TryLoadAsync(
+        string path,
+        CancellationToken cancellationToken)
     {
         if (!File.Exists(path))
         {
-            return null;
+            return (LoadOutcome.Missing, null);
         }
 
+        ExplorerSettings? settings;
         try
         {
             await using var stream = File.OpenRead(path);
-            return await JsonSerializer.DeserializeAsync<ExplorerSettings>(stream, JsonOptions, cancellationToken)
+            settings = await JsonSerializer.DeserializeAsync<ExplorerSettings>(stream, JsonOptions, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (JsonException)
         {
-            return null;
+            return (LoadOutcome.Unusable, null);
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            return null;
+            return (LoadOutcome.Unreadable, null);
+        }
+
+        if (settings is null) return (LoadOutcome.Unusable, null);
+        try
+        {
+            Validate(settings);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or NotSupportedException)
+        {
+            return (LoadOutcome.Unusable, null);
+        }
+
+        return (LoadOutcome.Loaded, Migrate(settings));
+    }
+
+    private void Quarantine(string path)
+    {
+        if (!File.Exists(path)) return;
+        var name = $"{Path.GetFileNameWithoutExtension(path)}.unreadable-{DateTime.UtcNow:yyyyMMdd-HHmmss-fff}.json";
+        try
+        {
+            File.Move(path, Path.Combine(paths.DataRoot, name));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // If the file cannot be moved aside, leave it; the caller still gets a usable result.
         }
     }
 
@@ -182,6 +252,7 @@ public sealed class AtomicJsonSettingsStore(AppPaths paths) : ISettingsStore
             };
         }
 
+        if (settings.SchemaVersion < 5) settings = settings with { SchemaVersion = 5 };
         return settings;
     }
 }

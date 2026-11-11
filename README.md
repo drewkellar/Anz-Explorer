@@ -14,6 +14,7 @@ The repository contains a buildable, self-contained WinUI 3 application with:
 - Native large-buffer directory enumeration, serialized cold scans, and a folder-only cache designed to minimize seeks, CPU, and cache growth.
 - A dynamic “This PC” location and sidebar drive section that refreshes local, removable, optical, and mapped network drives as they appear or disappear.
 - Open, create folder, rename, copy, cut, paste, Recycle Bin delete, permanent delete, properties, and multi-selection.
+- Copy, move, paste, and duplicate use Windows Shell transfers with native progress/cancellation and conflict dialogs. Transfers are serialized; cut clipboard data is retained for retrying skipped items. App-level undo and an operations history panel remain planned.
 - Familiar keyboard shortcuts and native light, dark, scaling, high-contrast, and accessibility behavior supplied by WinUI.
 - No account, cloud service, telemetry, advertising, or elevation requirement.
 
