@@ -1125,30 +1125,11 @@ public sealed partial class MainWindow : Window
             var isActive = ReferenceEquals(item, selected);
             item.Opacity = isActive || _accessibilitySettings.HighContrast ? 1 : 0.74;
             Canvas.SetZIndex(item, isActive ? 1 : 0);
-        }
 
-        if (selected is not TabViewItem selectedTab
-            || selectedTab.ActualWidth <= 0
-            || selectedTab.ActualHeight <= 0)
-        {
-            ActiveTabIndicator.Visibility = Visibility.Collapsed;
-            return;
-        }
-
-        try
-        {
-            var bounds = selectedTab.TransformToVisual(AppTitleBar).TransformBounds(
-                new Windows.Foundation.Rect(0, 0, selectedTab.ActualWidth, selectedTab.ActualHeight));
-            ActiveTabIndicator.Width = bounds.Width;
-            ActiveTabIndicator.Height = bounds.Height;
-            Canvas.SetLeft(ActiveTabIndicator, bounds.X);
-            Canvas.SetTop(ActiveTabIndicator, bounds.Y);
-            ActiveTabIndicator.Visibility = Visibility.Visible;
-        }
-        catch (ArgumentException)
-        {
-            // A tab can leave the visual tree during close or cross-window transfer.
-            ActiveTabIndicator.Visibility = Visibility.Collapsed;
+            // The selected tab is highlighted by its own Selected visual state, which moves
+            // with the tab. A tab transferred between windows can keep a stale state, so
+            // force every tab to match the actual selection.
+            VisualStateManager.GoToState(item, isActive ? "Selected" : "Normal", false);
         }
     }
 

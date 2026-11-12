@@ -274,17 +274,6 @@
                           Background="Transparent" />
                 </TabView.TabStripFooter>
             </TabView>
-            <!-- This single foreground outline is authoritative. Even if WinUI
-                 retains an old per-item selected surface, only one tab can carry
-                 the active outline. -->
-            <Canvas Grid.ColumnSpan="2" IsHitTestVisible="False">
-                <Border x:Name="ActiveTabIndicator"
-                        Background="Transparent"
-                        BorderBrush="{ThemeResource AnzActiveTabBorderBrush}"
-                        BorderThickness="2,2,2,3"
-                        CornerRadius="7,7,0,0"
-                        Visibility="Collapsed" />
-            </Canvas>
             <Border x:Name="TabDropTargetIndicator"
                     Grid.Column="1"
                     Margin="0,2,140,1"
