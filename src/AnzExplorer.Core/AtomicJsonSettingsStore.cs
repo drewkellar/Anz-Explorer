@@ -203,12 +203,11 @@ public sealed class AtomicJsonSettingsStore(AppPaths paths) : ISettingsStore
 
     private static void Validate(ExplorerSettings settings)
     {
-        if (settings.SchemaVersion > ExplorerSettings.CurrentSchemaVersion)
-        {
-            throw new NotSupportedException(
-                $"Settings schema {settings.SchemaVersion} is newer than supported schema {ExplorerSettings.CurrentSchemaVersion}.");
-        }
-
+        // A newer schema is accepted: settings only ever gain fields, unknown fields are
+        // preserved through UnknownProperties, and the newer version number is kept on
+        // save so the newer build does not re-run its migrations. Rejecting it made the
+        // app start with no tabs after a newer build had run (for example, switching
+        // between development branches).
         var duplicateIds = settings.SidebarGroups
             .SelectMany(group => group.Items.Select(item => item.Id).Append(group.Id))
             .GroupBy(id => id)

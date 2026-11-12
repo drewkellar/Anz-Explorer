@@ -30,9 +30,8 @@
                     <SolidColorBrush x:Key="AnzDownloadBrush" Color="#FF69D3B3" />
                     <SolidColorBrush x:Key="AnzNetworkBrush" Color="#FF61D4E8" />
                     <SolidColorBrush x:Key="AnzRemovableBrush" Color="#FFFFA95C" />
-                    <SolidColorBrush x:Key="AnzActiveTabBorderBrush" Color="#FF6FC3FF" />
                     <SolidColorBrush x:Key="TabViewItemHeaderBackground" Color="#00111820" />
-                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="#00111820" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="#FF2A3746" />
                     <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPointerOver" Color="#00111820" />
                     <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPressed" Color="#00111820" />
                     <SolidColorBrush x:Key="TabViewItemHeaderForeground" Color="#FF9BAAB9" />
@@ -64,9 +63,8 @@
                     <SolidColorBrush x:Key="AnzDownloadBrush" Color="#FF147A61" />
                     <SolidColorBrush x:Key="AnzNetworkBrush" Color="#FF087C91" />
                     <SolidColorBrush x:Key="AnzRemovableBrush" Color="#FFA65810" />
-                    <SolidColorBrush x:Key="AnzActiveTabBorderBrush" Color="#FF1670B8" />
                     <SolidColorBrush x:Key="TabViewItemHeaderBackground" Color="#00FFFFFF" />
-                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="#00FFFFFF" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="#FFFFFFFF" />
                     <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPointerOver" Color="#00FFFFFF" />
                     <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPressed" Color="#00FFFFFF" />
                     <SolidColorBrush x:Key="TabViewItemHeaderForeground" Color="#FF536170" />
@@ -98,9 +96,8 @@
                     <SolidColorBrush x:Key="AnzDownloadBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
                     <SolidColorBrush x:Key="AnzNetworkBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
                     <SolidColorBrush x:Key="AnzRemovableBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
-                    <SolidColorBrush x:Key="AnzActiveTabBorderBrush" Color="{ThemeResource SystemColorHighlightTextColor}" />
                     <SolidColorBrush x:Key="TabViewItemHeaderBackground" Color="{ThemeResource SystemColorWindowColor}" />
-                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="Transparent" />
+                    <SolidColorBrush x:Key="TabViewItemHeaderBackgroundSelected" Color="{ThemeResource SystemColorHighlightColor}" />
                     <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPointerOver" Color="{ThemeResource SystemColorHighlightColor}" />
                     <SolidColorBrush x:Key="TabViewItemHeaderBackgroundPressed" Color="{ThemeResource SystemColorHighlightColor}" />
                     <SolidColorBrush x:Key="TabViewItemHeaderForeground" Color="{ThemeResource SystemColorWindowTextColor}" />

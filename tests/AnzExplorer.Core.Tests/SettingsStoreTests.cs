@@ -46,6 +46,31 @@ public sealed class SettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Load_AcceptsNewerSchemaAndSavePreservesUnknownSettings()
+    {
+        // Written by a newer build that added a setting this build does not know about.
+        var paths = new AppPaths(_root);
+        paths.EnsureCreated();
+        await File.WriteAllTextAsync(paths.SettingsPath, $$"""
+            {
+              "schemaVersion": {{ExplorerSettings.CurrentSchemaVersion + 1}},
+              "fixedHomePath": "C:\\Known",
+              "futureSetting": { "enabled": true, "mode": "experimental" }
+            }
+            """);
+        var store = new AtomicJsonSettingsStore(paths);
+
+        var loaded = await store.LoadAsync();
+        Assert.Equal(@"C:\Known", loaded.FixedHomePath);
+
+        await store.SaveAsync(loaded with { DisplayScale = 1.25 });
+        var saved = await File.ReadAllTextAsync(paths.SettingsPath);
+        Assert.Contains("futureSetting", saved);
+        Assert.Contains($"\"schemaVersion\": {ExplorerSettings.CurrentSchemaVersion + 1}", saved);
+        Assert.Equal(1.25, (await store.LoadAsync()).DisplayScale);
+    }
+
+    [Fact]
     public async Task Load_UsesBackupWhenPrimaryJsonIsCorrupt()
     {
         var paths = new AppPaths(_root);
@@ -250,19 +275,20 @@ public sealed class SettingsStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task Load_PreservesNewerSchemaFileInsteadOfLettingItBeOverwritten()
+    public async Task Load_UsesNewerSchemaFileInsteadOfQuarantiningIt()
     {
+        // Newer settings are read and written back (with unknown fields preserved) rather
+        // than set aside, so switching between builds keeps the user's settings.
         var paths = new AppPaths(_root);
         paths.EnsureCreated();
-        const string newer = """{"schemaVersion":99,"fixedHomePath":"C:\\Future"}""";
-        await File.WriteAllTextAsync(paths.SettingsPath, newer);
+        await File.WriteAllTextAsync(paths.SettingsPath, """{"schemaVersion":99,"fixedHomePath":"C:\\Future"}""");
 
         var loaded = await new AtomicJsonSettingsStore(paths).LoadAsync();
         await new AtomicJsonSettingsStore(paths).SaveAsync(loaded);
 
-        Assert.NotEqual(@"C:\Future", loaded.FixedHomePath);
-        var preserved = Assert.Single(Directory.GetFiles(_root, "settings.unreadable-*.json"));
-        Assert.Equal(newer, await File.ReadAllTextAsync(preserved));
+        Assert.Equal(@"C:\Future", loaded.FixedHomePath);
+        Assert.Empty(Directory.GetFiles(_root, "settings.unreadable-*.json"));
+        Assert.Equal(99, (await new AtomicJsonSettingsStore(paths).LoadAsync()).SchemaVersion);
     }
 
     [Fact]

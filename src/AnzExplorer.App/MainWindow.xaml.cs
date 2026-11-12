@@ -66,6 +66,9 @@ public sealed partial class MainWindow : Window
     private Windows.Foundation.Point? _dragPosition;
     private ScrollMode _previousVerticalScrollMode = ScrollMode.Enabled;
     private bool _controlledDragScrolling;
+    // The viewer whose scroll mode was disabled for a drag. Tracked separately from
+    // _fileScrollViewer because hovering a tab mid-drag switches the active list.
+    private ScrollViewer? _dragScrollViewer;
     private bool _dropHandledInApp;
     private string? _pendingDropDestination;
     private TabViewItem? _hoveredDropTab;
@@ -247,8 +250,13 @@ public sealed partial class MainWindow : Window
         catch (Exception exception)
         {
             DiagnosticLog.Error("UI", $"W{DiagnosticId} Initialization failed", exception);
+            // Open a usable tab before reporting, so a failed dialog can't leave an empty window.
+            if (Tabs.TabItems.Count == 0)
+            {
+                AddTab(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), true);
+            }
+
             await ShowErrorAsync("Anz Explorer could not restore its previous state.", exception);
-            AddTab(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), true);
         }
         finally
         {
@@ -716,7 +724,11 @@ public sealed partial class MainWindow : Window
         .Cast<TabSession>()
         .ToArray();
 
-    private async Task NavigateAsync(string path, bool addHistory = true)
+    /// <param name="revealPath">
+    /// The location being left by Back or Up. Once the folder loads, the item that is or
+    /// contains it is selected and scrolled into view, as in File Explorer.
+    /// </param>
+    private async Task NavigateAsync(string path, bool addHistory = true, string? revealPath = null)
     {
         TabRuntime? tab = ActiveTab;
         if (tab is null)
@@ -752,13 +764,22 @@ public sealed partial class MainWindow : Window
             }
         }
 
+        // Back/Forward update the session path before calling here, so a reveal request
+        // (not the path comparison) is what distinguishes them from a refresh.
         var preserveView = !addHistory
+            && revealPath is null
             && string.Equals(tab.Session.CurrentPath, canonical, StringComparison.OrdinalIgnoreCase);
         var preservedSelection = preserveView
             ? FileList.SelectedItems.Cast<FileSystemItemViewModel>().Select(item => item.Path).ToHashSet(StringComparer.OrdinalIgnoreCase)
             : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         _fileScrollViewer ??= FindDescendant<ScrollViewer>(FileList);
         var preservedVerticalOffset = preserveView ? _fileScrollViewer?.VerticalOffset : null;
+        if (tab.LoadedPath is { } leavingPath
+            && !string.Equals(leavingPath, canonical, StringComparison.OrdinalIgnoreCase)
+            && _fileScrollViewer is { } leavingScrollViewer)
+        {
+            tab.RememberScrollOffset(leavingPath, leavingScrollViewer.VerticalOffset);
+        }
 
         _navigationCancellation?.Cancel();
         _navigationCancellation?.Dispose();
@@ -832,6 +853,10 @@ public sealed partial class MainWindow : Window
             if (preserveView)
             {
                 RestoreFileViewState(preservedSelection, preservedVerticalOffset);
+            }
+            else if (revealPath is not null)
+            {
+                RevealPreviousLocation(tab, canonical, revealPath);
             }
         }
         catch (OperationCanceledException)
@@ -1009,6 +1034,56 @@ public sealed partial class MainWindow : Window
         });
     }
 
+    private void RevealPreviousLocation(TabRuntime tab, string folderPath, string previousPath)
+    {
+        var revealItemPath = NavigationReveal.FindItemToReveal(previousPath, tab.Items.Select(item => item.Path));
+        var rememberedOffset = tab.TakeScrollOffset(folderPath);
+        if (revealItemPath is null && rememberedOffset is null) return;
+
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!ReferenceEquals(ActiveTab, tab)
+                || tab.FileList is not { } list
+                || !string.Equals(tab.LoadedPath, folderPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var item = revealItemPath is null
+                ? null
+                : tab.Items.FirstOrDefault(entry => string.Equals(entry.Path, revealItemPath, StringComparison.OrdinalIgnoreCase));
+            var focusWasInList = list.XamlRoot is { } root
+                && FocusManager.GetFocusedElement(root) is DependencyObject focused
+                && IsWithinElement(focused, list);
+
+            if (item is not null)
+            {
+                list.SelectedItems.Clear();
+                list.SelectedItem = item;
+            }
+
+            list.UpdateLayout();
+            tab.ScrollViewer ??= FindDescendant<ScrollViewer>(list);
+            _fileScrollViewer = tab.ScrollViewer;
+            if (rememberedOffset is { } offset && tab.ScrollViewer is { } scrollViewer)
+            {
+                // Return to the exact position the user left; the folder they opened was visible there.
+                scrollViewer.ChangeView(null, offset, null, disableAnimation: true);
+            }
+            else if (item is not null)
+            {
+                list.ScrollIntoView(item, ScrollIntoViewAlignment.Default);
+            }
+
+            if (item is not null && focusWasInList)
+            {
+                // Keep keyboard navigation continuing from the revealed item.
+                list.UpdateLayout();
+                (list.ContainerFromItem(item) as ListViewItem)?.Focus(FocusState.Programmatic);
+            }
+        });
+    }
+
     private async Task PopulateFolderSizesAsync(
         TabRuntime tab,
         IReadOnlyList<FileSystemItemViewModel> folders,
@@ -1133,6 +1208,11 @@ public sealed partial class MainWindow : Window
                 isActive ? "AnzSurfaceRaisedBrush" : "AnzPaneBackgroundBrush"];
             item.FontWeight = isActive ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
             Canvas.SetZIndex(item, isActive ? 1 : 0);
+
+            // The selected tab is highlighted by its own Selected visual state, which moves
+            // with the tab. A tab transferred between windows can keep a stale state, so
+            // force every tab to match the actual selection.
+            VisualStateManager.GoToState(item, isActive ? "Selected" : "Normal", false);
         }
         UpdateTabInputRegions();
     }
@@ -2238,6 +2318,37 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    internal void InvalidateFolders(IReadOnlySet<string> folders, bool refreshActiveTab)
+    {
+        var canonicalFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var folder in folders)
+        {
+            try
+            {
+                canonicalFolders.Add(PathCanonicalizer.Canonicalize(folder));
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                // Not a real folder path; nothing can be showing it.
+            }
+        }
+
+        var active = ActiveTab;
+        foreach (var runtime in Tabs.TabItems.OfType<TabViewItem>().Select(item => item.Tag).OfType<TabRuntime>())
+        {
+            if (runtime.LoadedPath is not { } loaded || !canonicalFolders.Contains(loaded)) continue;
+            if (!ReferenceEquals(runtime, active))
+            {
+                CaptureTabViewState(runtime);
+                runtime.LoadedPath = null;
+            }
+            else if (refreshActiveTab)
+            {
+                _ = NavigateAsync(runtime.Session.CurrentPath, false);
+            }
+        }
+    }
+
     private bool CanAcceptStorageDrop(DragEventArgs e, out string destination)
     {
         destination = string.Empty;
@@ -2368,12 +2479,14 @@ public sealed partial class MainWindow : Window
 
     private void BeginControlledDragScrolling()
     {
-        if (_controlledDragScrolling) return;
         _fileScrollViewer ??= FindDescendant<ScrollViewer>(FileList);
+        if (_controlledDragScrolling && ReferenceEquals(_dragScrollViewer, _fileScrollViewer)) return;
+        if (_controlledDragScrolling) RestoreDragScrollViewer();
         if (_fileScrollViewer is null) return;
 
-        _previousVerticalScrollMode = _fileScrollViewer.VerticalScrollMode;
-        _fileScrollViewer.VerticalScrollMode = ScrollMode.Disabled;
+        _dragScrollViewer = _fileScrollViewer;
+        _previousVerticalScrollMode = _dragScrollViewer.VerticalScrollMode;
+        _dragScrollViewer.VerticalScrollMode = ScrollMode.Disabled;
         _controlledDragScrolling = true;
         _dragScrollTimer.Start();
     }
@@ -2382,16 +2495,23 @@ public sealed partial class MainWindow : Window
     {
         _dragScrollTimer.Stop();
         _dragPosition = null;
-        if (_controlledDragScrolling && _fileScrollViewer is not null)
+        RestoreDragScrollViewer();
+    }
+
+    private void RestoreDragScrollViewer()
+    {
+        if (_controlledDragScrolling && _dragScrollViewer is not null)
         {
-            _fileScrollViewer.VerticalScrollMode = _previousVerticalScrollMode;
+            _dragScrollViewer.VerticalScrollMode = _previousVerticalScrollMode;
         }
 
+        _dragScrollViewer = null;
         _controlledDragScrolling = false;
     }
 
     private void DragScrollTimer_Tick(object? sender, object e)
     {
+        if (!ReferenceEquals(_dragScrollViewer, _fileScrollViewer)) return;
         if (_fileScrollViewer is null || _dragPosition is not { } position) return;
 
         const double activationBand = 40;
@@ -2478,13 +2598,18 @@ public sealed partial class MainWindow : Window
 
             // A partial move also changes the source. Re-enumerate when revisited.
             if (sourceTab is not null) sourceTab.LoadedPath = null;
-            foreach (var header in Tabs.TabItems.OfType<TabViewItem>())
-                if (header.Tag is TabRuntime cached && !ReferenceEquals(cached, ActiveTab)
-                    && cached.Session.CurrentPath != SpecialLocations.ThisPc
-                    && (PathsEqual(cached.Session.CurrentPath, destination)
-                        || draggedItems.Any(item => string.Equals(Path.GetDirectoryName(item.Path),
-                            cached.Session.CurrentPath, StringComparison.OrdinalIgnoreCase))))
-                    cached.LoadedPath = null;
+
+            // The source folder may be open in another tab (the drag started there before
+            // hovering switched tabs); without this it would keep showing moved items.
+            var changedFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { destination };
+            if (operation == DataPackageOperation.Move)
+            {
+                foreach (var source in storageItems)
+                {
+                    if (Path.GetDirectoryName(source.Path) is { Length: > 0 } parent) changedFolders.Add(parent);
+                }
+            }
+            ((App)Application.Current).NotifyFoldersChanged(changedFolders, this);
 
             if (ActiveTab is { } tab)
             {
@@ -2625,7 +2750,7 @@ public sealed partial class MainWindow : Window
             ForwardHistory = session.ForwardHistory.Prepend(session.CurrentPath).Take(100).ToArray(),
             CurrentPath = target
         };
-        await NavigateAsync(target, false);
+        await NavigateAsync(target, false, revealPath: session.CurrentPath);
     }
 
     private async void Forward_Click(object sender, RoutedEventArgs e) => await GoForwardAsync();
@@ -2650,13 +2775,14 @@ public sealed partial class MainWindow : Window
     {
         if (ActiveTab is null || ActiveTab.Session.CurrentPath == SpecialLocations.ThisPc) return;
         var parent = Directory.GetParent(ActiveTab.Session.CurrentPath);
+        var current = ActiveTab.Session.CurrentPath;
         if (parent is not null)
         {
-            await NavigateAsync(parent.FullName);
+            await NavigateAsync(parent.FullName, revealPath: current);
         }
         else
         {
-            await NavigateAsync(SpecialLocations.ThisPc);
+            await NavigateAsync(SpecialLocations.ThisPc, revealPath: current);
         }
     }
 
@@ -3710,14 +3836,55 @@ public sealed partial class MainWindow : Window
     private async Task ShowErrorAsync(string title, Exception exception)
     {
         DiagnosticLog.Warn("UI", $"W{DiagnosticId} Error dialog: {title}", exception);
+        // Errors can be reported during startup, before the window has a XamlRoot.
+        // ShowAsync throws without one, and from an async void handler that ends the
+        // process, so wait for the content to load and never let the dialog itself fail.
+        var root = await WaitForXamlRootAsync();
+        if (root is null)
+        {
+            StatusText.Text = $"{title} {exception.Message}";
+            return;
+        }
+
         var dialog = new ContentDialog
         {
-            XamlRoot = Content.XamlRoot,
+            XamlRoot = root,
             Title = title,
             Content = exception.Message,
             CloseButtonText = "OK"
         };
-        await dialog.ShowAsync();
+        try
+        {
+            await dialog.ShowAsync();
+        }
+        catch (Exception dialogException) when (dialogException is ArgumentException or System.Runtime.InteropServices.COMException)
+        {
+            // Another dialog is already open, or the window is closing.
+            StatusText.Text = $"{title} {exception.Message}";
+        }
+    }
+
+    private async Task<XamlRoot?> WaitForXamlRootAsync()
+    {
+        if (Content?.XamlRoot is { } existing) return existing;
+        if (Content is not FrameworkElement content) return null;
+
+        var loaded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnLoaded(object sender, RoutedEventArgs e) => loaded.TrySetResult();
+        content.Loaded += OnLoaded;
+        try
+        {
+            if (content.XamlRoot is null)
+            {
+                await Task.WhenAny(loaded.Task, Task.Delay(TimeSpan.FromSeconds(10)));
+            }
+        }
+        finally
+        {
+            content.Loaded -= OnLoaded;
+        }
+
+        return content.XamlRoot;
     }
 
     private async Task SaveStateAsync()

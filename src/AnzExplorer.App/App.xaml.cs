@@ -111,6 +111,18 @@ public partial class App : Application
             .DistinctBy(session => session.Id)
             .ToArray();
 
+    /// <summary>
+    /// Folders whose contents changed through a drop. Visible tabs reload now; hidden
+    /// tabs reload when selected instead of showing their cached, stale listing.
+    /// </summary>
+    internal void NotifyFoldersChanged(IReadOnlySet<string> folders, MainWindow source)
+    {
+        foreach (var window in _windows)
+        {
+            window.InvalidateFolders(folders, refreshActiveTab: !ReferenceEquals(window, source));
+        }
+    }
+
     internal void ApplyColumnWidths(DetailsColumnWidths widths)
     {
         foreach (var window in _windows)

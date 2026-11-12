@@ -228,4 +228,17 @@ internal sealed class TabRuntime(TabSession session, MainWindow owner)
     public ListView? FileList { get; set; }
     public ScrollViewer? ScrollViewer { get; set; }
     public FileViewMode? AppliedViewMode { get; set; }
+
+    // Scroll positions of folders this tab navigated away from, so Back and Up can
+    // return to where the user was. In memory only; bounded so long sessions stay small.
+    private readonly Dictionary<string, double> _scrollOffsets = new(StringComparer.OrdinalIgnoreCase);
+
+    public void RememberScrollOffset(string path, double offset)
+    {
+        if (_scrollOffsets.Count >= 64 && !_scrollOffsets.ContainsKey(path)) _scrollOffsets.Clear();
+        _scrollOffsets[path] = offset;
+    }
+
+    public double? TakeScrollOffset(string path) =>
+        _scrollOffsets.Remove(path, out var offset) ? offset : null;
 }
