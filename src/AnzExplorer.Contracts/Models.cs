@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace AnzExplorer.Contracts;
@@ -81,6 +82,13 @@ public sealed record ExplorerSettings
     public bool PauseIndexingOnBattery { get; init; } = true;
     public DetailsColumnWidths DetailsColumnWidths { get; init; } = new();
     public double DisplayScale { get; init; } = 1.0;
+
+    /// <summary>
+    /// Settings written by a newer build that this build does not understand. Kept and
+    /// written back unchanged so running an older build never discards them.
+    /// </summary>
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement>? UnknownProperties { get; init; }
 }
 
 public sealed record DetailsColumnWidths(

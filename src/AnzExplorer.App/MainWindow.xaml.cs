@@ -221,8 +221,13 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception exception)
         {
+            // Open a usable tab before reporting, so a failed dialog can't leave an empty window.
+            if (Tabs.TabItems.Count == 0)
+            {
+                AddTab(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), true);
+            }
+
             await ShowErrorAsync("Anz Explorer could not restore its previous state.", exception);
-            AddTab(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), true);
         }
         finally
         {
@@ -3586,14 +3591,55 @@ public sealed partial class MainWindow : Window
 
     private async Task ShowErrorAsync(string title, Exception exception)
     {
+        // Errors can be reported during startup, before the window has a XamlRoot.
+        // ShowAsync throws without one, and from an async void handler that ends the
+        // process, so wait for the content to load and never let the dialog itself fail.
+        var root = await WaitForXamlRootAsync();
+        if (root is null)
+        {
+            StatusText.Text = $"{title} {exception.Message}";
+            return;
+        }
+
         var dialog = new ContentDialog
         {
-            XamlRoot = Content.XamlRoot,
+            XamlRoot = root,
             Title = title,
             Content = exception.Message,
             CloseButtonText = "OK"
         };
-        await dialog.ShowAsync();
+        try
+        {
+            await dialog.ShowAsync();
+        }
+        catch (Exception dialogException) when (dialogException is ArgumentException or System.Runtime.InteropServices.COMException)
+        {
+            // Another dialog is already open, or the window is closing.
+            StatusText.Text = $"{title} {exception.Message}";
+        }
+    }
+
+    private async Task<XamlRoot?> WaitForXamlRootAsync()
+    {
+        if (Content?.XamlRoot is { } existing) return existing;
+        if (Content is not FrameworkElement content) return null;
+
+        var loaded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnLoaded(object sender, RoutedEventArgs e) => loaded.TrySetResult();
+        content.Loaded += OnLoaded;
+        try
+        {
+            if (content.XamlRoot is null)
+            {
+                await Task.WhenAny(loaded.Task, Task.Delay(TimeSpan.FromSeconds(10)));
+            }
+        }
+        finally
+        {
+            content.Loaded -= OnLoaded;
+        }
+
+        return content.XamlRoot;
     }
 
     private async Task SaveStateAsync()

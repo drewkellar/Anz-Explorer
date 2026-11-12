@@ -27,6 +27,31 @@ public sealed class SettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Load_AcceptsNewerSchemaAndSavePreservesUnknownSettings()
+    {
+        // Written by a newer build (schema 5 added folder sort preferences).
+        var paths = new AppPaths(_root);
+        paths.EnsureCreated();
+        await File.WriteAllTextAsync(paths.SettingsPath, $$"""
+            {
+              "schemaVersion": {{ExplorerSettings.CurrentSchemaVersion + 1}},
+              "fixedHomePath": "C:\\Known",
+              "folderSortPreferences": [ { "path": "C:\\Data", "property": "Size", "direction": "descending" } ]
+            }
+            """);
+        var store = new AtomicJsonSettingsStore(paths);
+
+        var loaded = await store.LoadAsync();
+        Assert.Equal(@"C:\Known", loaded.FixedHomePath);
+
+        await store.SaveAsync(loaded with { DisplayScale = 1.25 });
+        var saved = await File.ReadAllTextAsync(paths.SettingsPath);
+        Assert.Contains("folderSortPreferences", saved);
+        Assert.Contains($"\"schemaVersion\": {ExplorerSettings.CurrentSchemaVersion + 1}", saved);
+        Assert.Equal(1.25, (await store.LoadAsync()).DisplayScale);
+    }
+
+    [Fact]
     public async Task Load_UsesBackupWhenPrimaryJsonIsCorrupt()
     {
         var paths = new AppPaths(_root);
