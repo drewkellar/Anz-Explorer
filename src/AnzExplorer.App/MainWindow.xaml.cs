@@ -62,6 +62,9 @@ public sealed partial class MainWindow : Window
     private Windows.Foundation.Point? _dragPosition;
     private ScrollMode _previousVerticalScrollMode = ScrollMode.Enabled;
     private bool _controlledDragScrolling;
+    // The viewer whose scroll mode was disabled for a drag. Tracked separately from
+    // _fileScrollViewer because hovering a tab mid-drag switches the active list.
+    private ScrollViewer? _dragScrollViewer;
     private bool _dropHandledInApp;
     private string? _pendingDropDestination;
     private TabViewItem? _hoveredDropTab;
@@ -671,7 +674,11 @@ public sealed partial class MainWindow : Window
         .Cast<TabSession>()
         .ToArray();
 
-    private async Task NavigateAsync(string path, bool addHistory = true)
+    /// <param name="revealPath">
+    /// The location being left by Back or Up. Once the folder loads, the item that is or
+    /// contains it is selected and scrolled into view, as in File Explorer.
+    /// </param>
+    private async Task NavigateAsync(string path, bool addHistory = true, string? revealPath = null)
     {
         TabRuntime? tab = ActiveTab;
         if (tab is null)
@@ -704,13 +711,22 @@ public sealed partial class MainWindow : Window
             }
         }
 
+        // Back/Forward update the session path before calling here, so a reveal request
+        // (not the path comparison) is what distinguishes them from a refresh.
         var preserveView = !addHistory
+            && revealPath is null
             && string.Equals(tab.Session.CurrentPath, canonical, StringComparison.OrdinalIgnoreCase);
         var preservedSelection = preserveView
             ? FileList.SelectedItems.Cast<FileSystemItemViewModel>().Select(item => item.Path).ToHashSet(StringComparer.OrdinalIgnoreCase)
             : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         _fileScrollViewer ??= FindDescendant<ScrollViewer>(FileList);
         var preservedVerticalOffset = preserveView ? _fileScrollViewer?.VerticalOffset : null;
+        if (tab.LoadedPath is { } leavingPath
+            && !string.Equals(leavingPath, canonical, StringComparison.OrdinalIgnoreCase)
+            && _fileScrollViewer is { } leavingScrollViewer)
+        {
+            tab.RememberScrollOffset(leavingPath, leavingScrollViewer.VerticalOffset);
+        }
 
         _navigationCancellation?.Cancel();
         _navigationCancellation?.Dispose();
@@ -781,6 +797,10 @@ public sealed partial class MainWindow : Window
             if (preserveView)
             {
                 RestoreFileViewState(preservedSelection, preservedVerticalOffset);
+            }
+            else if (revealPath is not null)
+            {
+                RevealPreviousLocation(tab, canonical, revealPath);
             }
         }
         catch (OperationCanceledException)
@@ -941,6 +961,56 @@ public sealed partial class MainWindow : Window
             {
                 _fileScrollViewer ??= FindDescendant<ScrollViewer>(FileList);
                 _fileScrollViewer?.ChangeView(null, offset, null, disableAnimation: true);
+            }
+        });
+    }
+
+    private void RevealPreviousLocation(TabRuntime tab, string folderPath, string previousPath)
+    {
+        var revealItemPath = NavigationReveal.FindItemToReveal(previousPath, tab.Items.Select(item => item.Path));
+        var rememberedOffset = tab.TakeScrollOffset(folderPath);
+        if (revealItemPath is null && rememberedOffset is null) return;
+
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (!ReferenceEquals(ActiveTab, tab)
+                || tab.FileList is not { } list
+                || !string.Equals(tab.LoadedPath, folderPath, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var item = revealItemPath is null
+                ? null
+                : tab.Items.FirstOrDefault(entry => string.Equals(entry.Path, revealItemPath, StringComparison.OrdinalIgnoreCase));
+            var focusWasInList = list.XamlRoot is { } root
+                && FocusManager.GetFocusedElement(root) is DependencyObject focused
+                && IsWithinElement(focused, list);
+
+            if (item is not null)
+            {
+                list.SelectedItems.Clear();
+                list.SelectedItem = item;
+            }
+
+            list.UpdateLayout();
+            tab.ScrollViewer ??= FindDescendant<ScrollViewer>(list);
+            _fileScrollViewer = tab.ScrollViewer;
+            if (rememberedOffset is { } offset && tab.ScrollViewer is { } scrollViewer)
+            {
+                // Return to the exact position the user left; the folder they opened was visible there.
+                scrollViewer.ChangeView(null, offset, null, disableAnimation: true);
+            }
+            else if (item is not null)
+            {
+                list.ScrollIntoView(item, ScrollIntoViewAlignment.Default);
+            }
+
+            if (item is not null && focusWasInList)
+            {
+                // Keep keyboard navigation continuing from the revealed item.
+                list.UpdateLayout();
+                (list.ContainerFromItem(item) as ListViewItem)?.Focus(FocusState.Programmatic);
             }
         });
     }
@@ -1998,25 +2068,38 @@ public sealed partial class MainWindow : Window
     private void ExplorerTab_DragOver(object sender, DragEventArgs e)
     {
         if (sender is not TabViewItem { Tag: TabRuntime runtime } tab
-            || runtime.Session.CurrentPath == SpecialLocations.ThisPc
-            || !CanAcceptDropAt(e, runtime.Session.CurrentPath))
+            || !ContainsSupportedDropData(e.DataView))
         {
             e.AcceptedOperation = DataPackageOperation.None;
             return;
         }
 
         e.Handled = true;
-        var operation = ResolveDropOperation(e, runtime.Session.CurrentPath);
-        e.AcceptedOperation = operation;
-        e.DragUIOverride.Caption = $"{(operation == DataPackageOperation.Move ? "Move" : "Copy")} to {GetTabTitle(runtime.Session.CurrentPath)}";
-        e.DragUIOverride.IsCaptionVisible = true;
-        e.DragUIOverride.IsGlyphVisible = true;
+
+        // Hovering opens the tab (as in File Explorer) even when the tab itself cannot
+        // take the drop, so the user can then drop onto a folder inside it.
         if (!ReferenceEquals(Tabs.SelectedItem, tab) && !ReferenceEquals(_hoveredDropTab, tab))
         {
             _tabHoverTimer.Stop();
             _hoveredDropTab = tab;
             _tabHoverTimer.Start();
         }
+
+        var destination = runtime.Session.CurrentPath;
+        if (destination == SpecialLocations.ThisPc || !CanAcceptDropAt(e, destination))
+        {
+            e.AcceptedOperation = DataPackageOperation.None;
+            e.DragUIOverride.Caption = $"Open {GetTabTitle(destination)}";
+            e.DragUIOverride.IsCaptionVisible = true;
+            e.DragUIOverride.IsGlyphVisible = false;
+            return;
+        }
+
+        var operation = ResolveDropOperation(e, destination);
+        e.AcceptedOperation = operation;
+        e.DragUIOverride.Caption = $"{(operation == DataPackageOperation.Move ? "Move" : "Copy")} to {GetTabTitle(destination)}";
+        e.DragUIOverride.IsCaptionVisible = true;
+        e.DragUIOverride.IsGlyphVisible = true;
     }
 
     private void ExplorerTab_DragLeave(object sender, DragEventArgs e)
@@ -2055,6 +2138,37 @@ public sealed partial class MainWindow : Window
         if (_hoveredDropTab is { } tab && Tabs.TabItems.Contains(tab))
         {
             Tabs.SelectedItem = tab;
+        }
+    }
+
+    internal void InvalidateFolders(IReadOnlySet<string> folders, bool refreshActiveTab)
+    {
+        var canonicalFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var folder in folders)
+        {
+            try
+            {
+                canonicalFolders.Add(PathCanonicalizer.Canonicalize(folder));
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                // Not a real folder path; nothing can be showing it.
+            }
+        }
+
+        var active = ActiveTab;
+        foreach (var runtime in Tabs.TabItems.OfType<TabViewItem>().Select(item => item.Tag).OfType<TabRuntime>())
+        {
+            if (runtime.LoadedPath is not { } loaded || !canonicalFolders.Contains(loaded)) continue;
+            if (!ReferenceEquals(runtime, active))
+            {
+                CaptureTabViewState(runtime);
+                runtime.LoadedPath = null;
+            }
+            else if (refreshActiveTab)
+            {
+                _ = NavigateAsync(runtime.Session.CurrentPath, false);
+            }
         }
     }
 
@@ -2185,12 +2299,14 @@ public sealed partial class MainWindow : Window
 
     private void BeginControlledDragScrolling()
     {
-        if (_controlledDragScrolling) return;
         _fileScrollViewer ??= FindDescendant<ScrollViewer>(FileList);
+        if (_controlledDragScrolling && ReferenceEquals(_dragScrollViewer, _fileScrollViewer)) return;
+        if (_controlledDragScrolling) RestoreDragScrollViewer();
         if (_fileScrollViewer is null) return;
 
-        _previousVerticalScrollMode = _fileScrollViewer.VerticalScrollMode;
-        _fileScrollViewer.VerticalScrollMode = ScrollMode.Disabled;
+        _dragScrollViewer = _fileScrollViewer;
+        _previousVerticalScrollMode = _dragScrollViewer.VerticalScrollMode;
+        _dragScrollViewer.VerticalScrollMode = ScrollMode.Disabled;
         _controlledDragScrolling = true;
         _dragScrollTimer.Start();
     }
@@ -2199,16 +2315,23 @@ public sealed partial class MainWindow : Window
     {
         _dragScrollTimer.Stop();
         _dragPosition = null;
-        if (_controlledDragScrolling && _fileScrollViewer is not null)
+        RestoreDragScrollViewer();
+    }
+
+    private void RestoreDragScrollViewer()
+    {
+        if (_controlledDragScrolling && _dragScrollViewer is not null)
         {
-            _fileScrollViewer.VerticalScrollMode = _previousVerticalScrollMode;
+            _dragScrollViewer.VerticalScrollMode = _previousVerticalScrollMode;
         }
 
+        _dragScrollViewer = null;
         _controlledDragScrolling = false;
     }
 
     private void DragScrollTimer_Tick(object? sender, object e)
     {
+        if (!ReferenceEquals(_dragScrollViewer, _fileScrollViewer)) return;
         if (_fileScrollViewer is null || _dragPosition is not { } position) return;
 
         const double activationBand = 40;
@@ -2287,6 +2410,18 @@ public sealed partial class MainWindow : Window
                 destination,
                 operation,
                 CancellationToken.None);
+
+            // The source folder may be open in another tab (the drag started there before
+            // hovering switched tabs); without this it would keep showing moved items.
+            var changedFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { destination };
+            if (operation == DataPackageOperation.Move)
+            {
+                foreach (var source in storageItems)
+                {
+                    if (Path.GetDirectoryName(source.Path) is { Length: > 0 } parent) changedFolders.Add(parent);
+                }
+            }
+            ((App)Application.Current).NotifyFoldersChanged(changedFolders, this);
 
             if (ActiveTab is { } tab)
             {
@@ -2425,7 +2560,7 @@ public sealed partial class MainWindow : Window
             ForwardHistory = session.ForwardHistory.Prepend(session.CurrentPath).Take(100).ToArray(),
             CurrentPath = target
         };
-        await NavigateAsync(target, false);
+        await NavigateAsync(target, false, revealPath: session.CurrentPath);
     }
 
     private async void Forward_Click(object sender, RoutedEventArgs e) => await GoForwardAsync();
@@ -2450,13 +2585,14 @@ public sealed partial class MainWindow : Window
     {
         if (ActiveTab is null || ActiveTab.Session.CurrentPath == SpecialLocations.ThisPc) return;
         var parent = Directory.GetParent(ActiveTab.Session.CurrentPath);
+        var current = ActiveTab.Session.CurrentPath;
         if (parent is not null)
         {
-            await NavigateAsync(parent.FullName);
+            await NavigateAsync(parent.FullName, revealPath: current);
         }
         else
         {
-            await NavigateAsync(SpecialLocations.ThisPc);
+            await NavigateAsync(SpecialLocations.ThisPc, revealPath: current);
         }
     }
 
