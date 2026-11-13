@@ -59,6 +59,9 @@ public sealed partial class MainWindow : Window
     private FileViewMode _thisPcViewMode = FileViewMode.Tiles;
     private CancellationTokenSource? _searchCancellation;
     private bool _initializing = true;
+    // WinUI otherwise gives startup focus to the first tab stop, the add-tab button, and
+    // draws a focus ring on it. The first loaded folder takes focus instead, as in File Explorer.
+    private bool _focusFileListAfterFirstLoad = true;
     // False if settings could not be read; saving defaults then would erase the user's file.
     private bool _settingsLoaded;
     private bool _driveRefreshRunning;
@@ -163,6 +166,8 @@ public sealed partial class MainWindow : Window
         // entire title-bar grid is registered, tiny movements on a tab can invoke
         // the OS window-drag animation before XAML receives the pointer sequence.
         SetTitleBar(TitleBarDragRegion);
+        // The TabView template is applied after Loaded, so wait one dispatcher pass.
+        Tabs.Loaded += (_, _) => DispatcherQueue.TryEnqueue(AlignAddTabButton);
         if (_startEmpty)
         {
             AppWindow.IsShownInSwitchers = false;
@@ -910,6 +915,13 @@ public sealed partial class MainWindow : Window
             ApplyViewMode(tab);
             BindItemsSource(tab);
             Breadcrumb("Navigate done", $"items={entries.Count} in {navigationTimer.ElapsedMilliseconds} ms");
+            if (_focusFileListAfterFirstLoad)
+            {
+                _focusFileListAfterFirstLoad = false;
+                var list = FileList;
+                DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                    () => list.Focus(FocusState.Programmatic));
+            }
 
             UpdateStatusText();
             UpdateEmptyFolderState();
@@ -2045,6 +2057,33 @@ public sealed partial class MainWindow : Window
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Tabs reach the bottom of the strip so the selected one joins the navigation row.
+    /// TabView's add button also touched that row, which made it look sunk into the
+    /// address bar; shrink it so it floats level with the tab labels.
+    /// </summary>
+    private void AlignAddTabButton()
+    {
+        if (FindNamedDescendant(Tabs, "AddButton") is not Button addButton) return;
+        addButton.VerticalAlignment = VerticalAlignment.Bottom;
+        addButton.Height = 26;
+        addButton.Margin = new Thickness(4, 0, 0, 3);
+        addButton.CornerRadius = new CornerRadius(5);
+    }
+
+    private static FrameworkElement? FindNamedDescendant(DependencyObject current, string name)
+    {
+        var childCount = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(current);
+        for (var index = 0; index < childCount; index++)
+        {
+            var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(current, index);
+            if (child is FrameworkElement element && element.Name == name) return element;
+            if (FindNamedDescendant(child, name) is { } descendant) return descendant;
+        }
+
+        return null;
     }
 
     private static T? FindDescendant<T>(DependencyObject current) where T : DependencyObject
