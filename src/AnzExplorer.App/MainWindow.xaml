@@ -284,23 +284,14 @@
 
         <Grid.RowDefinitions>
             <RowDefinition Height="44" />
+            <RowDefinition Height="48" />
+            <RowDefinition Height="46" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <Grid x:Name="AppTitleBar" Background="{ThemeResource AnzPaneBackgroundBrush}">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="210" />
-                <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
-            <Grid Grid.Column="0" Background="Transparent">
-                <StackPanel Margin="16,0,0,0" VerticalAlignment="Center" Orientation="Horizontal" Spacing="9">
-                    <Image Width="22" Height="22" Source="Assets/AnzExplorer.png" Stretch="Uniform" />
-                    <TextBlock VerticalAlignment="Center" FontSize="14" FontWeight="SemiBold" Text="Anz Explorer" />
-                </StackPanel>
-            </Grid>
             <TabView x:Name="Tabs"
-                     Grid.Column="1"
-                     Margin="0,0,140,0"
+                     Margin="8,0,140,0"
                      TabWidthMode="Equal"
                      CanReorderTabs="False"
                      CanDragTabs="False"
@@ -317,10 +308,9 @@
                           Background="Transparent" />
                 </TabView.TabStripFooter>
             </TabView>
-            <Canvas x:Name="FileTabDropSurface" Grid.ColumnSpan="2" Visibility="Collapsed" />
+            <Canvas x:Name="FileTabDropSurface" Visibility="Collapsed" />
             <Border x:Name="TabDropTargetIndicator"
-                    Grid.Column="1"
-                    Margin="0,2,140,1"
+                    Margin="8,2,140,1"
                     Background="#142F81F7"
                     BorderBrush="#FF60A5FA"
                     BorderThickness="1"
@@ -329,8 +319,160 @@
                     Visibility="Collapsed" />
         </Grid>
 
+        <Grid Grid.Row="1"
+              Padding="10,7"
+              Background="{ThemeResource AnzPaneBackgroundBrush}"
+              ColumnSpacing="5">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="260" />
+            </Grid.ColumnDefinitions>
+            <Button Grid.Column="0" Style="{StaticResource NavigationButtonStyle}" Content="&#xE72B;" Click="Back_Click" ToolTipService.ToolTip="Back (Alt+Left)" />
+            <Button Grid.Column="1" Style="{StaticResource NavigationButtonStyle}" Content="&#xE72A;" Click="Forward_Click" ToolTipService.ToolTip="Forward (Alt+Right)" />
+            <Button x:Name="UpButton"
+                    Grid.Column="2"
+                    Style="{StaticResource NavigationButtonStyle}"
+                    Content="&#xE74A;"
+                    AllowDrop="True"
+                    DragOver="UpButton_DragOver"
+                    DragLeave="UpButton_DragLeave"
+                    Drop="UpButton_Drop"
+                    Click="Up_Click"
+                    ToolTipService.ToolTip="Up (Alt+Up)" />
+            <Button Grid.Column="3" Style="{StaticResource NavigationButtonStyle}" Content="&#xE72C;" Click="Refresh_Click" ToolTipService.ToolTip="Refresh (F5)" AutomationProperties.Name="Refresh" />
+            <Border x:Name="AddressBarHost"
+                    Grid.Column="4"
+                    Height="34"
+                    Margin="5,0,0,0"
+                    Background="{ThemeResource AnzSurfaceRaisedBrush}"
+                    BorderBrush="{ThemeResource AnzBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="4"
+                    Tapped="AddressBarHost_Tapped">
+                <Grid>
+                    <ScrollViewer x:Name="BreadcrumbScroller"
+                                  HorizontalScrollBarVisibility="Hidden"
+                                  HorizontalScrollMode="Enabled"
+                                  VerticalScrollBarVisibility="Disabled"
+                                  VerticalScrollMode="Disabled"
+                                  AutomationProperties.Name="Current folder path">
+                        <StackPanel x:Name="BreadcrumbPanel"
+                                    Padding="3,0"
+                                    Orientation="Horizontal" />
+                    </ScrollViewer>
+                    <TextBox x:Name="AddressBox"
+                             Margin="-1"
+                             Background="{ThemeResource AnzSurfaceRaisedBrush}"
+                             BorderThickness="1"
+                             VerticalContentAlignment="Center"
+                             Visibility="Collapsed"
+                             KeyDown="AddressBox_KeyDown"
+                             LostFocus="AddressBox_LostFocus"
+                             AutomationProperties.Name="Address" />
+                </Grid>
+            </Border>
+            <TextBox x:Name="SearchBox"
+                     Grid.Column="5"
+                     Height="34"
+                     Margin="4,0,0,0"
+                     Background="{ThemeResource AnzSurfaceRaisedBrush}"
+                     VerticalContentAlignment="Center"
+                     PlaceholderText="Search this folder"
+                     TextChanged="SearchBox_TextChanged"
+                     AutomationProperties.Name="Search" />
+        </Grid>
+
+        <Border Grid.Row="2"
+                Background="{ThemeResource AnzSurfaceBrush}"
+                BorderBrush="{ThemeResource AnzBorderBrush}"
+                BorderThickness="0,1,0,1">
+            <CommandBar Background="Transparent"
+                        HorizontalAlignment="Left"
+                        DefaultLabelPosition="Right"
+                        IsDynamicOverflowEnabled="True">
+                <AppBarButton x:Name="NewFolderButton" Icon="Add" Label="New" Foreground="{ThemeResource AnzDocumentBrush}" ToolTipService.ToolTip="New item (Ctrl+Shift+N creates a folder)" AutomationProperties.HelpText="New item (Ctrl+Shift+N creates a folder)">
+                    <AppBarButton.Flyout>
+                        <MenuFlyout>
+                            <MenuFlyoutItem Text="Folder" Click="NewFolder_Click"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8B7;" Foreground="{ThemeResource AnzFolderBrush}" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                            <MenuFlyoutItem Text="Shortcut" Click="NewShortcut_Click"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE71B;" Foreground="{ThemeResource AccentFillColorDefaultBrush}" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                            <MenuFlyoutSeparator />
+                            <MenuFlyoutItem Text="AutoHotkey Script" Tag="AutoHotkey" Click="NewFile_Click"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE943;" Foreground="#5DBB63" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                            <MenuFlyoutItem Text="Bitmap image" Tag="Bitmap" Click="NewFile_Click"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xEB9F;" Foreground="{ThemeResource AnzImageBrush}" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                            <MenuFlyoutItem Text="Python Source File" Tag="Python" Click="NewFile_Click"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE943;" Foreground="{ThemeResource AnzCodeBrush}" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                            <MenuFlyoutItem Text="Text Document" Tag="Text" Click="NewFile_Click"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8A5;" Foreground="{ThemeResource AnzDocumentBrush}" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
+                        </MenuFlyout>
+                    </AppBarButton.Flyout>
+                </AppBarButton>
+                <AppBarSeparator />
+                <AppBarButton x:Name="CutButton" LabelPosition="Collapsed" Icon="Cut" Label="Cut" Click="Cut_Click" ToolTipService.ToolTip="Cut (Ctrl+X)" AutomationProperties.HelpText="Cut (Ctrl+X)" />
+                <AppBarButton x:Name="CopyButton" LabelPosition="Collapsed" Icon="Copy" Label="Copy" Click="Copy_Click" ToolTipService.ToolTip="Copy (Ctrl+C)" AutomationProperties.HelpText="Copy (Ctrl+C)" />
+                <AppBarButton x:Name="PasteButton" LabelPosition="Collapsed" Icon="Paste" Label="Paste" Foreground="{ThemeResource AnzDownloadBrush}" Click="Paste_Click" ToolTipService.ToolTip="Paste (Ctrl+V)" AutomationProperties.HelpText="Paste (Ctrl+V)" />
+                <AppBarButton x:Name="RenameButton" LabelPosition="Collapsed" Icon="Rename" Label="Rename" Click="Rename_Click" ToolTipService.ToolTip="Rename (F2)" AutomationProperties.HelpText="Rename (F2)" />
+                <AppBarButton x:Name="DeleteButton" LabelPosition="Collapsed" Icon="Delete" Label="Delete" Foreground="{ThemeResource SystemFillColorCriticalBrush}" Click="Delete_Click" ToolTipService.ToolTip="Delete (Delete)" AutomationProperties.HelpText="Delete (Delete)" />
+                <AppBarSeparator />
+                <AppBarButton Icon="Sort" Label="Sort" ToolTipService.ToolTip="Sort items" AutomationProperties.HelpText="Sort items">
+                    <AppBarButton.Flyout>
+                        <MenuFlyout Opening="SortMenu_Opening">
+                            <ToggleMenuFlyoutItem x:Name="CommandSortNameMenuItem" Text="Name" Tag="Name" Click="BackgroundSortProperty_Click" />
+                            <ToggleMenuFlyoutItem x:Name="CommandSortModifiedMenuItem" Text="Date modified" Tag="Modified" Click="BackgroundSortProperty_Click" />
+                            <ToggleMenuFlyoutItem x:Name="CommandSortTypeMenuItem" Text="Type" Tag="Type" Click="BackgroundSortProperty_Click" />
+                            <ToggleMenuFlyoutItem x:Name="CommandSortSizeMenuItem" Text="Size" Tag="LogicalBytes" Click="BackgroundSortProperty_Click" />
+                            <MenuFlyoutSeparator />
+                            <ToggleMenuFlyoutItem x:Name="CommandSortAscendingMenuItem" Text="Ascending" Tag="Ascending" Click="BackgroundSortDirection_Click" />
+                            <ToggleMenuFlyoutItem x:Name="CommandSortDescendingMenuItem" Text="Descending" Tag="Descending" Click="BackgroundSortDirection_Click" />
+                        </MenuFlyout>
+                    </AppBarButton.Flyout>
+                </AppBarButton>
+                <AppBarElementContainer>
+                    <Button x:Name="ViewCommandButton"
+                            Height="40"
+                            Padding="10,0"
+                            Background="Transparent"
+                            BorderThickness="0"
+                            CornerRadius="4"
+                            AutomationProperties.Name="View"
+                            AutomationProperties.HelpText="Change the file view"
+                            ToolTipService.ToolTip="Change the file view">
+                        <Button.Content>
+                            <StackPanel Orientation="Horizontal" Spacing="7">
+                                <FontIcon FontSize="16" Glyph="&#xE8FD;" />
+                                <TextBlock VerticalAlignment="Center" Text="View" />
+                                <FontIcon FontSize="9" Glyph="&#xE70D;" />
+                            </StackPanel>
+                        </Button.Content>
+                        <Button.Flyout>
+                        <MenuFlyout Opening="ViewMenu_Opening">
+                            <ToggleMenuFlyoutItem x:Name="ViewExtraLargeMenuItem" Text="Extra large icons" Tag="ExtraLargeIcons" Click="ViewMode_Click" />
+                            <ToggleMenuFlyoutItem x:Name="ViewLargeMenuItem" Text="Large icons" Tag="LargeIcons" Click="ViewMode_Click" />
+                            <ToggleMenuFlyoutItem x:Name="ViewMediumMenuItem" Text="Medium icons" Tag="MediumIcons" Click="ViewMode_Click" />
+                            <ToggleMenuFlyoutItem x:Name="ViewSmallMenuItem" Text="Small icons" Tag="SmallIcons" Click="ViewMode_Click" />
+                            <ToggleMenuFlyoutItem x:Name="ViewListMenuItem" Text="List" Tag="List" Click="ViewMode_Click" />
+                            <ToggleMenuFlyoutItem x:Name="ViewDetailsMenuItem" Text="Details" Tag="Details" Click="ViewMode_Click" />
+                            <ToggleMenuFlyoutItem x:Name="ViewTilesMenuItem" Text="Tiles" Tag="Tiles" Click="ViewMode_Click" />
+                            <ToggleMenuFlyoutItem x:Name="ViewContentMenuItem" Text="Content" Tag="Content" Click="ViewMode_Click" />
+                        </MenuFlyout>
+                        </Button.Flyout>
+                    </Button>
+                </AppBarElementContainer>
+                <AppBarButton x:Name="ZoomOutButton" LabelPosition="Collapsed" Label="Zoom out" Click="ZoomOut_Click" ToolTipService.ToolTip="Zoom out (Ctrl+-)" AutomationProperties.HelpText="Zoom out (Ctrl+-)">
+                    <AppBarButton.Icon><FontIcon Glyph="&#xE738;" /></AppBarButton.Icon>
+                </AppBarButton>
+                <AppBarButton x:Name="ZoomInButton" LabelPosition="Collapsed" Label="Zoom in" Click="ZoomIn_Click" ToolTipService.ToolTip="Zoom in (Ctrl+=)" AutomationProperties.HelpText="Zoom in (Ctrl+=)">
+                    <AppBarButton.Icon><FontIcon Glyph="&#xE710;" /></AppBarButton.Icon>
+                </AppBarButton>
+                <CommandBar.SecondaryCommands>
+                    <AppBarButton Icon="Setting" Label="Settings" Click="Settings_Click" />
+                    <AppBarButton Label="Open in Windows Explorer" Click="OpenInExplorer_Click" />
+                </CommandBar.SecondaryCommands>
+            </CommandBar>
+        </Border>
+
         <NavigationView x:Name="SidebarNavigation"
-                        Grid.Row="1"
+                        Grid.Row="3"
                         Background="{ThemeResource AnzPaneBackgroundBrush}"
                         IsBackButtonVisible="Collapsed"
                         IsSettingsVisible="False"
@@ -341,163 +483,11 @@
                         ItemInvoked="SidebarNavigation_ItemInvoked">
             <Grid Background="{ThemeResource AnzWindowBackgroundBrush}">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="50" />
-                    <RowDefinition Height="46" />
                     <RowDefinition Height="*" />
                     <RowDefinition Height="24" />
                 </Grid.RowDefinitions>
 
-                <Grid Grid.Row="0"
-                      Padding="10,7"
-                      Background="{ThemeResource AnzPaneBackgroundBrush}"
-                      ColumnSpacing="5">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="260" />
-                    </Grid.ColumnDefinitions>
-                    <Button Grid.Column="0" Style="{StaticResource NavigationButtonStyle}" Content="&#xE72B;" Click="Back_Click" ToolTipService.ToolTip="Back (Alt+Left)" />
-                    <Button Grid.Column="1" Style="{StaticResource NavigationButtonStyle}" Content="&#xE72A;" Click="Forward_Click" ToolTipService.ToolTip="Forward (Alt+Right)" />
-                    <Button x:Name="UpButton"
-                            Grid.Column="2"
-                            Style="{StaticResource NavigationButtonStyle}"
-                            Content="&#xE74A;"
-                            AllowDrop="True"
-                            DragOver="UpButton_DragOver"
-                            DragLeave="UpButton_DragLeave"
-                            Drop="UpButton_Drop"
-                            Click="Up_Click"
-                            ToolTipService.ToolTip="Up (Alt+Up)" />
-                    <Border x:Name="AddressBarHost"
-                            Grid.Column="3"
-                            Height="34"
-                            Margin="5,0,0,0"
-                            Background="{ThemeResource AnzSurfaceRaisedBrush}"
-                            BorderBrush="{ThemeResource AnzBorderBrush}"
-                            BorderThickness="1"
-                            CornerRadius="4"
-                            Tapped="AddressBarHost_Tapped">
-                        <Grid>
-                            <ScrollViewer x:Name="BreadcrumbScroller"
-                                          HorizontalScrollBarVisibility="Hidden"
-                                          HorizontalScrollMode="Enabled"
-                                          VerticalScrollBarVisibility="Disabled"
-                                          VerticalScrollMode="Disabled"
-                                          AutomationProperties.Name="Current folder path">
-                                <StackPanel x:Name="BreadcrumbPanel"
-                                            Padding="3,0"
-                                            Orientation="Horizontal" />
-                            </ScrollViewer>
-                            <TextBox x:Name="AddressBox"
-                                     Margin="-1"
-                                     Background="{ThemeResource AnzSurfaceRaisedBrush}"
-                                     BorderThickness="1"
-                                     VerticalContentAlignment="Center"
-                                     Visibility="Collapsed"
-                                     KeyDown="AddressBox_KeyDown"
-                                     LostFocus="AddressBox_LostFocus"
-                                     AutomationProperties.Name="Address" />
-                        </Grid>
-                    </Border>
-                    <TextBox x:Name="SearchBox"
-                             Grid.Column="4"
-                             Height="34"
-                             Margin="4,0,0,0"
-                             Background="{ThemeResource AnzSurfaceRaisedBrush}"
-                             VerticalContentAlignment="Center"
-                             PlaceholderText="Search this folder"
-                             TextChanged="SearchBox_TextChanged"
-                             AutomationProperties.Name="Search" />
-                </Grid>
-
-                <Border Grid.Row="1"
-                        Background="{ThemeResource AnzSurfaceBrush}"
-                        BorderBrush="{ThemeResource AnzBorderBrush}"
-                        BorderThickness="0,1,0,1">
-                    <CommandBar Background="Transparent"
-                                DefaultLabelPosition="Collapsed"
-                                IsDynamicOverflowEnabled="True">
-                        <AppBarButton x:Name="NewFolderButton" Icon="Add" Label="New" Foreground="{ThemeResource AnzDocumentBrush}" ToolTipService.ToolTip="New item (Ctrl+Shift+N creates a folder)" AutomationProperties.HelpText="New item (Ctrl+Shift+N creates a folder)">
-                            <AppBarButton.Flyout>
-                                <MenuFlyout>
-                                    <MenuFlyoutItem Text="Folder" Click="NewFolder_Click"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8B7;" Foreground="{ThemeResource AnzFolderBrush}" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
-                                    <MenuFlyoutItem Text="Shortcut" Click="NewShortcut_Click"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE71B;" Foreground="{ThemeResource AccentFillColorDefaultBrush}" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
-                                    <MenuFlyoutSeparator />
-                                    <MenuFlyoutItem Text="AutoHotkey Script" Tag="AutoHotkey" Click="NewFile_Click"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE943;" Foreground="#5DBB63" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
-                                    <MenuFlyoutItem Text="Bitmap image" Tag="Bitmap" Click="NewFile_Click"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xEB9F;" Foreground="{ThemeResource AnzImageBrush}" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
-                                    <MenuFlyoutItem Text="Python Source File" Tag="Python" Click="NewFile_Click"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE943;" Foreground="{ThemeResource AnzCodeBrush}" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
-                                    <MenuFlyoutItem Text="Text Document" Tag="Text" Click="NewFile_Click"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8A5;" Foreground="{ThemeResource AnzDocumentBrush}" /></MenuFlyoutItem.Icon></MenuFlyoutItem>
-                                </MenuFlyout>
-                            </AppBarButton.Flyout>
-                        </AppBarButton>
-                        <AppBarSeparator />
-                        <AppBarButton x:Name="CutButton" Icon="Cut" Label="Cut" Click="Cut_Click" ToolTipService.ToolTip="Cut (Ctrl+X)" AutomationProperties.HelpText="Cut (Ctrl+X)" />
-                        <AppBarButton x:Name="CopyButton" Icon="Copy" Label="Copy" Click="Copy_Click" ToolTipService.ToolTip="Copy (Ctrl+C)" AutomationProperties.HelpText="Copy (Ctrl+C)" />
-                        <AppBarButton x:Name="PasteButton" Icon="Paste" Label="Paste" Foreground="{ThemeResource AnzDownloadBrush}" Click="Paste_Click" ToolTipService.ToolTip="Paste (Ctrl+V)" AutomationProperties.HelpText="Paste (Ctrl+V)" />
-                        <AppBarButton x:Name="RenameButton" Icon="Rename" Label="Rename" Click="Rename_Click" ToolTipService.ToolTip="Rename (F2)" AutomationProperties.HelpText="Rename (F2)" />
-                        <AppBarButton x:Name="DeleteButton" Icon="Delete" Label="Delete" Foreground="{ThemeResource SystemFillColorCriticalBrush}" Click="Delete_Click" ToolTipService.ToolTip="Delete (Delete)" AutomationProperties.HelpText="Delete (Delete)" />
-                        <AppBarSeparator />
-                        <AppBarButton Icon="Sort" Label="Sort" ToolTipService.ToolTip="Sort items" AutomationProperties.HelpText="Sort items">
-                            <AppBarButton.Flyout>
-                                <MenuFlyout Opening="SortMenu_Opening">
-                                    <ToggleMenuFlyoutItem x:Name="CommandSortNameMenuItem" Text="Name" Tag="Name" Click="BackgroundSortProperty_Click" />
-                                    <ToggleMenuFlyoutItem x:Name="CommandSortModifiedMenuItem" Text="Date modified" Tag="Modified" Click="BackgroundSortProperty_Click" />
-                                    <ToggleMenuFlyoutItem x:Name="CommandSortTypeMenuItem" Text="Type" Tag="Type" Click="BackgroundSortProperty_Click" />
-                                    <ToggleMenuFlyoutItem x:Name="CommandSortSizeMenuItem" Text="Size" Tag="LogicalBytes" Click="BackgroundSortProperty_Click" />
-                                    <MenuFlyoutSeparator />
-                                    <ToggleMenuFlyoutItem x:Name="CommandSortAscendingMenuItem" Text="Ascending" Tag="Ascending" Click="BackgroundSortDirection_Click" />
-                                    <ToggleMenuFlyoutItem x:Name="CommandSortDescendingMenuItem" Text="Descending" Tag="Descending" Click="BackgroundSortDirection_Click" />
-                                </MenuFlyout>
-                            </AppBarButton.Flyout>
-                        </AppBarButton>
-                        <AppBarElementContainer>
-                            <Button x:Name="ViewCommandButton"
-                                    Height="40"
-                                    Padding="10,0"
-                                    Background="Transparent"
-                                    BorderThickness="0"
-                                    CornerRadius="4"
-                                    AutomationProperties.Name="View"
-                                    AutomationProperties.HelpText="Change the file view"
-                                    ToolTipService.ToolTip="Change the file view">
-                                <Button.Content>
-                                    <StackPanel Orientation="Horizontal" Spacing="7">
-                                        <FontIcon FontSize="16" Glyph="&#xE8FD;" />
-                                        <TextBlock VerticalAlignment="Center" Text="View" />
-                                        <FontIcon FontSize="9" Glyph="&#xE70D;" />
-                                    </StackPanel>
-                                </Button.Content>
-                                <Button.Flyout>
-                                <MenuFlyout Opening="ViewMenu_Opening">
-                                    <ToggleMenuFlyoutItem x:Name="ViewExtraLargeMenuItem" Text="Extra large icons" Tag="ExtraLargeIcons" Click="ViewMode_Click" />
-                                    <ToggleMenuFlyoutItem x:Name="ViewLargeMenuItem" Text="Large icons" Tag="LargeIcons" Click="ViewMode_Click" />
-                                    <ToggleMenuFlyoutItem x:Name="ViewMediumMenuItem" Text="Medium icons" Tag="MediumIcons" Click="ViewMode_Click" />
-                                    <ToggleMenuFlyoutItem x:Name="ViewSmallMenuItem" Text="Small icons" Tag="SmallIcons" Click="ViewMode_Click" />
-                                    <ToggleMenuFlyoutItem x:Name="ViewListMenuItem" Text="List" Tag="List" Click="ViewMode_Click" />
-                                    <ToggleMenuFlyoutItem x:Name="ViewDetailsMenuItem" Text="Details" Tag="Details" Click="ViewMode_Click" />
-                                    <ToggleMenuFlyoutItem x:Name="ViewTilesMenuItem" Text="Tiles" Tag="Tiles" Click="ViewMode_Click" />
-                                    <ToggleMenuFlyoutItem x:Name="ViewContentMenuItem" Text="Content" Tag="Content" Click="ViewMode_Click" />
-                                </MenuFlyout>
-                                </Button.Flyout>
-                            </Button>
-                        </AppBarElementContainer>
-                        <AppBarButton x:Name="ZoomOutButton" Label="Zoom out" Click="ZoomOut_Click" ToolTipService.ToolTip="Zoom out (Ctrl+-)" AutomationProperties.HelpText="Zoom out (Ctrl+-)">
-                            <AppBarButton.Icon><FontIcon Glyph="&#xE738;" /></AppBarButton.Icon>
-                        </AppBarButton>
-                        <AppBarButton x:Name="ZoomInButton" Label="Zoom in" Click="ZoomIn_Click" ToolTipService.ToolTip="Zoom in (Ctrl+=)" AutomationProperties.HelpText="Zoom in (Ctrl+=)">
-                            <AppBarButton.Icon><FontIcon Glyph="&#xE710;" /></AppBarButton.Icon>
-                        </AppBarButton>
-                        <AppBarButton Icon="Refresh" Label="Refresh" Click="Refresh_Click" ToolTipService.ToolTip="Refresh (F5)" AutomationProperties.HelpText="Refresh (F5)" />
-                        <CommandBar.SecondaryCommands>
-                            <AppBarButton Icon="Setting" Label="Settings" Click="Settings_Click" />
-                            <AppBarButton Label="Open in Windows Explorer" Click="OpenInExplorer_Click" />
-                        </CommandBar.SecondaryCommands>
-                    </CommandBar>
-                </Border>
-
-                <Grid x:Name="FileViewHost" Grid.Row="2" Background="Transparent">
+                <Grid x:Name="FileViewHost" Grid.Row="0" Background="Transparent">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="30" />
                         <RowDefinition Height="*" />
@@ -673,7 +663,7 @@
                     </Canvas>
                 </Grid>
 
-                <Border Grid.Row="3"
+                <Border Grid.Row="1"
                         Padding="10,0"
                         Background="{ThemeResource AnzPaneBackgroundBrush}"
                         BorderBrush="{ThemeResource AnzBorderBrush}"

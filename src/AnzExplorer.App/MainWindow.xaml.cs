@@ -1730,6 +1730,7 @@ public sealed partial class MainWindow : Window
     {
         BreadcrumbPanel.Children.Clear();
         var segments = CreateBreadcrumbSegments(path);
+        SearchBox.PlaceholderText = segments.Count > 0 ? $"Search {segments[^1].Label}" : "Search";
         for (var index = 0; index < segments.Count; index++)
         {
             var segment = segments[index];
