@@ -256,6 +256,30 @@
                     </StackPanel>
                 </Grid>
             </DataTemplate>
+            <!-- This PC: drive and network-location tiles with a usage bar, as in File Explorer. -->
+            <DataTemplate x:Key="DriveTileTemplate" x:DataType="local:FileSystemItemViewModel">
+                <Grid Width="{Binding Scale, Source={StaticResource DisplayScale}, Converter={StaticResource ScaledDoubleConverter}, ConverterParameter=260}" Height="{Binding Scale, Source={StaticResource DisplayScale}, Converter={StaticResource ScaledDoubleConverter}, ConverterParameter=64}" Padding="8,6" ColumnSpacing="10" ToolTipService.ToolTip="{x:Bind Path}" AllowDrop="True" DragOver="FileRow_DragOver" Drop="FileRow_Drop">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                    <Grid Width="{Binding Scale, Source={StaticResource DisplayScale}, Converter={StaticResource ScaledDoubleConverter}, ConverterParameter=48}" Height="{Binding Scale, Source={StaticResource DisplayScale}, Converter={StaticResource ScaledDoubleConverter}, ConverterParameter=48}" VerticalAlignment="Center">
+                        <FontIcon FontSize="{Binding Scale, Source={StaticResource DisplayScale}, Converter={StaticResource ScaledDoubleConverter}, ConverterParameter=38}" Glyph="{x:Bind Glyph}" Foreground="{x:Bind IconBrush}" />
+                        <Image Source="{x:Bind ShellIcon, Mode=OneWay}" Stretch="Uniform" />
+                    </Grid>
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="4">
+                        <TextBlock FontSize="{Binding Scale, Source={StaticResource DisplayScale}, Converter={StaticResource ScaledDoubleConverter}, ConverterParameter=12}" Text="{x:Bind Name}" TextTrimming="CharacterEllipsis" />
+                        <Grid Height="{Binding Scale, Source={StaticResource DisplayScale}, Converter={StaticResource ScaledDoubleConverter}, ConverterParameter=14}" Visibility="{x:Bind UsageVisibility}" BorderThickness="1" BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" Background="{ThemeResource ControlFillColorSecondaryBrush}">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="{x:Bind UsedLength}" /><ColumnDefinition Width="{x:Bind FreeLength}" /></Grid.ColumnDefinitions>
+                            <Rectangle Fill="{x:Bind UsageBrush}" />
+                        </Grid>
+                        <TextBlock FontSize="{Binding Scale, Source={StaticResource DisplayScale}, Converter={StaticResource ScaledDoubleConverter}, ConverterParameter=11}" Opacity="0.72" Text="{x:Bind SizeText, Mode=OneWay}" Visibility="{x:Bind SubtitleVisibility}" TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                </Grid>
+            </DataTemplate>
+            <DataTemplate x:Key="LocationGroupHeaderTemplate" x:DataType="local:LocationGroup">
+                <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,6,0,2">
+                    <FontIcon FontSize="10" Glyph="&#xE70D;" Opacity="0.8" />
+                    <TextBlock FontSize="{Binding Scale, Source={StaticResource DisplayScale}, Converter={StaticResource ScaledDoubleConverter}, ConverterParameter=14}" Text="{x:Bind Key}" />
+                </StackPanel>
+            </DataTemplate>
         </Grid.Resources>
 
         <Grid.RowDefinitions>
@@ -590,6 +614,9 @@
                               ContainerContentChanging="FileList_ContainerContentChanging"
                               SelectionMode="Extended"
                               KeyDown="FileList_KeyDown">
+                        <ListView.GroupStyle>
+                            <GroupStyle HeaderTemplate="{StaticResource LocationGroupHeaderTemplate}" />
+                        </ListView.GroupStyle>
                         <ListView.ContextFlyout>
                             <MenuFlyout x:Name="FileContextFlyout" Opening="FileContextMenu_Opening">
                                 <MenuFlyoutItem x:Name="OpenMenuItem" Text="Open" Click="OpenSelected_Click"><MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8E5;" /></MenuFlyoutItem.Icon></MenuFlyoutItem>

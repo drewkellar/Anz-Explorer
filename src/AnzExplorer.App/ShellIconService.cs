@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Storage;
@@ -16,6 +17,7 @@ internal sealed class ShellIconService
     private const int MaximumCachedFileTypes = 256;
     private static readonly TimeSpan ShellRequestTimeout = TimeSpan.FromSeconds(3);
     private readonly Dictionary<string, ImageSource> _fileTypeCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (byte[] Pixels, int Width, int Height)?> _locationCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _concurrency = new(6, 6);
 
     public async Task<ImageSource?> GetIconAsync(FileSystemItemViewModel item)
@@ -93,6 +95,50 @@ internal sealed class ShellIconService
         {
             _concurrency.Release();
         }
+    }
+
+    /// <summary>
+    /// Returns the icon File Explorer shows for a drive or network location (for example
+    /// the Windows logo on the system drive). Network locations use their local shortcut
+    /// folder, so an offline share is never contacted.
+    /// </summary>
+    public async Task<ImageSource?> GetLocationIconAsync(FileSystemItemViewModel item)
+    {
+        var source = item.IconSourcePath ?? item.Path;
+        if (string.IsNullOrWhiteSpace(source)) return null;
+
+        // Pixels are cached rather than image objects: a shared image source did not
+        // render again after the tiles were recreated on a later visit to This PC.
+        if (!_locationCache.TryGetValue(source, out var icon))
+        {
+            await _concurrency.WaitAsync();
+            try
+            {
+                icon = await Task.Run(() => ShellItemImage.GetIconPixels(source, RequestedIconSize))
+                    .WaitAsync(ShellRequestTimeout);
+            }
+            catch (Exception)
+            {
+                // Not-ready drives and unreachable mapped drives fall back to the glyph.
+                return null;
+            }
+            finally
+            {
+                _concurrency.Release();
+            }
+
+            if (icon is null) return null;
+            if (_locationCache.Count < MaximumCachedFileTypes) _locationCache[source] = icon.Value;
+        }
+
+        if (icon is not { } pixels) return null;
+        var bitmap = new WriteableBitmap(pixels.Width, pixels.Height);
+        using (var buffer = bitmap.PixelBuffer.AsStream())
+        {
+            await buffer.WriteAsync(pixels.Pixels);
+        }
+        bitmap.Invalidate();
+        return bitmap;
     }
 
     private static bool CanCacheByFileType(string extension) =>

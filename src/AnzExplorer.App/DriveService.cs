@@ -18,7 +18,12 @@ internal sealed record DriveDescriptor(
     string CapacityText,
     string Icon,
     bool IsReady,
-    DriveType DriveType);
+    DriveType DriveType,
+    long? TotalBytes = null,
+    long? FreeBytes = null);
+
+/// <summary>A folder shortcut to a network share, as added with "Add a network location".</summary>
+internal sealed record NetworkLocation(string Name, string TargetPath, string ShortcutPath);
 
 internal static class DriveService
 {
@@ -62,7 +67,9 @@ internal static class DriveService
                     capacity,
                     icon,
                     isReady,
-                    drive.DriveType));
+                    drive.DriveType,
+                    isReady ? drive.TotalSize : null,
+                    isReady ? drive.AvailableFreeSpace : null));
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
@@ -76,22 +83,97 @@ internal static class DriveService
             .ToArray();
     }
 
-    public static IReadOnlyList<FileSystemItemViewModel> ToViewModels(IEnumerable<DriveDescriptor> drives) =>
-        drives.Select(drive => new FileSystemItemViewModel
+    public const string DevicesGroup = "Devices and drives";
+    public const string NetworkGroup = "Network locations";
+
+    /// <summary>
+    /// Builds the This PC items in display order: local devices first, then mapped
+    /// network drives and network locations (as File Explorer groups them).
+    /// </summary>
+    public static IReadOnlyList<FileSystemItemViewModel> ToViewModels(
+        IEnumerable<DriveDescriptor> drives,
+        IEnumerable<NetworkLocation>? networkLocations = null)
+    {
+        var items = drives.Select(drive => new FileSystemItemViewModel
         {
             Name = drive.DisplayName,
             Path = drive.RootPath,
             IsFolder = true,
             IsDrive = true,
+            IsNetworkLocation = drive.DriveType == DriveType.Network,
+            GroupName = drive.DriveType == DriveType.Network ? NetworkGroup : DevicesGroup,
+            UsedFraction = drive is { TotalBytes: > 0, FreeBytes: { } free }
+                ? Math.Clamp(1 - (double)free / drive.TotalBytes.Value, 0, 1)
+                : null,
             Modified = DateTimeOffset.MinValue,
             Type = drive.TypeLabel,
             SizeDescription = drive.CapacityText,
             SizeState = drive.IsReady ? FolderSizeState.Complete : FolderSizeState.Unavailable
-        }).ToArray();
+        }).ToList();
+
+        items.AddRange((networkLocations ?? []).Select(location => new FileSystemItemViewModel
+        {
+            Name = location.Name,
+            Path = location.TargetPath,
+            IconSourcePath = location.ShortcutPath,
+            IsFolder = true,
+            IsDrive = true,
+            IsNetworkLocation = true,
+            GroupName = NetworkGroup,
+            Modified = DateTimeOffset.MinValue,
+            Type = "Network location",
+            SizeState = FolderSizeState.Complete
+        }));
+
+        return items
+            .OrderBy(item => item.GroupName == NetworkGroup)
+            .ThenBy(item => item.IconSourcePath is not null)
+            // Drives in letter order (as File Explorer lists them), network locations by name.
+            .ThenBy(item => item.IconSourcePath is null ? item.Path : item.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
+    }
 
     private static Guid CreateStableId(string value)
     {
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(value.ToUpperInvariant()));
         return new Guid(hash.AsSpan(0, 16));
+    }
+}
+
+internal static class NetworkLocationService
+{
+    /// <summary>
+    /// Lists the user's network locations from the Network Shortcuts folder. Only local
+    /// shortcut files are read; the network targets are never contacted.
+    /// </summary>
+    public static IReadOnlyList<NetworkLocation> GetNetworkLocations()
+    {
+        var root = Environment.GetFolderPath(Environment.SpecialFolder.NetworkShortcuts);
+        if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) return [];
+
+        var locations = new List<NetworkLocation>();
+        try
+        {
+            foreach (var entry in Directory.EnumerateFileSystemEntries(root))
+            {
+                // "Add a network location" creates a folder holding target.lnk; a plain
+                // .lnk dropped into the folder is shown by File Explorer too.
+                var isFolder = Directory.Exists(entry);
+                var shortcut = isFolder ? Path.Combine(entry, "target.lnk") : entry;
+                if (!shortcut.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase) || !File.Exists(shortcut)) continue;
+
+                var target = ShellLinkService.TryGetTargetPath(shortcut);
+                if (string.IsNullOrWhiteSpace(target) || !Path.IsPathFullyQualified(target)) continue;
+
+                var name = isFolder ? Path.GetFileName(entry) : Path.GetFileNameWithoutExtension(entry);
+                locations.Add(new NetworkLocation(name, target, entry));
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // An unreadable shortcuts folder only means there are no network locations to show.
+        }
+
+        return locations;
     }
 }

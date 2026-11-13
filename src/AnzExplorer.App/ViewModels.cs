@@ -21,10 +21,30 @@ public sealed class FileSystemItemViewModel : INotifyPropertyChanged
     public string Path { get; set; } = string.Empty;
     public bool IsFolder { get; set; }
     public bool IsDrive { get; set; }
+
+    /// <summary>A mapped network drive or a network location shown on This PC.</summary>
+    public bool IsNetworkLocation { get; set; }
+
+    /// <summary>The This PC section this item belongs to.</summary>
+    public string GroupName { get; set; } = string.Empty;
+
+    /// <summary>Local path whose Shell icon represents this item, when it differs from <see cref="Path"/>.</summary>
+    public string? IconSourcePath { get; set; }
+
+    /// <summary>Fraction of a drive's capacity in use, or null when unknown.</summary>
+    public double? UsedFraction { get; set; }
+    public Visibility UsageVisibility => UsedFraction is null ? Visibility.Collapsed : Visibility.Visible;
+    public GridLength UsedLength => new(UsedFraction ?? 0, GridUnitType.Star);
+    public GridLength FreeLength => new(1 - (UsedFraction ?? 0), GridUnitType.Star);
+
+    /// <summary>File Explorer turns the bar red once a drive is 90% full.</summary>
+    public Brush UsageBrush => (Brush)Application.Current.Resources[
+        UsedFraction >= 0.9 ? "SystemFillColorCriticalBrush" : "AccentFillColorDefaultBrush"];
+    public Visibility SubtitleVisibility => string.IsNullOrEmpty(SizeText) ? Visibility.Collapsed : Visibility.Visible;
     public DateTimeOffset Modified { get; set; }
     public string Type { get; set; } = string.Empty;
     public int RowIndex { get; set; }
-    public string Glyph => IsDrive ? "\uEDA2" : IsFolder ? "\uE8B7" : "\uE7C3";
+    public string Glyph => IsNetworkLocation ? "\uE8CE" : IsDrive ? "\uEDA2" : IsFolder ? "\uE8B7" : "\uE7C3";
     public Visibility FolderIconVisibility => IsFolder && !IsDrive ? Visibility.Visible : Visibility.Collapsed;
     public Visibility GlyphIconVisibility => IsFolder && !IsDrive ? Visibility.Collapsed : Visibility.Visible;
     public bool IsImageFile => !IsFolder && System.IO.Path.GetExtension(Path).ToLowerInvariant() switch
@@ -228,6 +248,7 @@ internal sealed class TabRuntime(TabSession session, MainWindow owner)
     public ListView? FileList { get; set; }
     public ScrollViewer? ScrollViewer { get; set; }
     public FileViewMode? AppliedViewMode { get; set; }
+    public bool AppliedThisPcLayout { get; set; }
 
     // Scroll positions of folders this tab navigated away from, so Back and Up can
     // return to where the user was. In memory only; bounded so long sessions stay small.
@@ -241,4 +262,11 @@ internal sealed class TabRuntime(TabSession session, MainWindow owner)
 
     public double? TakeScrollOffset(string path) =>
         _scrollOffsets.Remove(path, out var offset) ? offset : null;
+}
+
+/// <summary>One titled section of the This PC view.</summary>
+public sealed class LocationGroup(string key, IEnumerable<FileSystemItemViewModel> items)
+    : List<FileSystemItemViewModel>(items)
+{
+    public string Key { get; } = key;
 }

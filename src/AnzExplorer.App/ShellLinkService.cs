@@ -34,6 +34,61 @@ internal static class ShellLinkService
         }
     }
 
+    /// <summary>
+    /// Reads a shortcut's target path without resolving it, so an offline network
+    /// target never blocks the caller. Returns null when the target is not a path.
+    /// </summary>
+    public static string? TryGetTargetPath(string shortcutPath)
+    {
+        object? comObject = null;
+        try
+        {
+            comObject = new ShellLinkComObject();
+            ((IPersistFile)comObject).Load(shortcutPath, 0);
+            var shellLink = (IShellLinkW)comObject;
+            var buffer = new StringBuilder(32768);
+            const uint UncPriority = 0x2;
+            if (shellLink.GetPath(buffer, buffer.Capacity, IntPtr.Zero, UncPriority) == 0 && buffer.Length > 0)
+            {
+                return buffer.ToString();
+            }
+
+            if (shellLink.GetIDList(out var itemIdList) == 0 && itemIdList != IntPtr.Zero)
+            {
+                try
+                {
+                    buffer.Clear();
+                    buffer.EnsureCapacity(32768);
+                    if (SHGetPathFromIDListEx(itemIdList, buffer, buffer.Capacity, 0) && buffer.Length > 0)
+                    {
+                        return buffer.ToString();
+                    }
+                }
+                finally
+                {
+                    Marshal.FreeCoTaskMem(itemIdList);
+                }
+            }
+
+            return null;
+        }
+        catch (Exception exception) when (exception is COMException or IOException or UnauthorizedAccessException or InvalidCastException)
+        {
+            return null;
+        }
+        finally
+        {
+            if (comObject is not null && Marshal.IsComObject(comObject))
+            {
+                Marshal.FinalReleaseComObject(comObject);
+            }
+        }
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SHGetPathFromIDListEx(IntPtr itemIdList, StringBuilder path, int pathLength, uint options);
+
     [ComImport]
     [Guid("00021401-0000-0000-C000-000000000046")]
     private sealed class ShellLinkComObject
