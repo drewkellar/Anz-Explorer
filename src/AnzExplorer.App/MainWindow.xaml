@@ -15,7 +15,7 @@
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="TabViewItem">
-                            <Grid x:Name="TabContainer" Background="{TemplateBinding Background}" CornerRadius="7" Padding="8,0,4,0" Margin="2,4" Height="32" Control.IsTemplateFocusTarget="True">
+                            <Grid x:Name="TabContainer" Background="{TemplateBinding Background}" CornerRadius="7,7,0,0" Padding="8,0,4,0" Margin="2,6,2,0" Height="38" VerticalAlignment="Bottom" Control.IsTemplateFocusTarget="True">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="24" />
                                     <ColumnDefinition Width="*" />
@@ -321,7 +321,7 @@
 
         <Grid Grid.Row="1"
               Padding="10,7"
-              Background="{ThemeResource AnzPaneBackgroundBrush}"
+              Background="{ThemeResource AnzSurfaceRaisedBrush}"
               ColumnSpacing="5">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
@@ -348,7 +348,7 @@
                     Grid.Column="4"
                     Height="34"
                     Margin="5,0,0,0"
-                    Background="{ThemeResource AnzSurfaceRaisedBrush}"
+                    Background="{ThemeResource AnzInputBrush}"
                     BorderBrush="{ThemeResource AnzBorderBrush}"
                     BorderThickness="1"
                     CornerRadius="4"
@@ -366,7 +366,7 @@
                     </ScrollViewer>
                     <TextBox x:Name="AddressBox"
                              Margin="-1"
-                             Background="{ThemeResource AnzSurfaceRaisedBrush}"
+                             Background="{ThemeResource AnzInputBrush}"
                              BorderThickness="1"
                              VerticalContentAlignment="Center"
                              Visibility="Collapsed"
@@ -379,7 +379,7 @@
                      Grid.Column="5"
                      Height="34"
                      Margin="4,0,0,0"
-                     Background="{ThemeResource AnzSurfaceRaisedBrush}"
+                     Background="{ThemeResource AnzInputBrush}"
                      VerticalContentAlignment="Center"
                      PlaceholderText="Search this folder"
                      TextChanged="SearchBox_TextChanged"
