@@ -1,8 +1,6 @@
 using System.Runtime.InteropServices.WindowsRuntime;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
-using Windows.Storage;
-using Windows.Storage.FileProperties;
 
 namespace AnzExplorer.App;
 
@@ -10,6 +8,12 @@ namespace AnzExplorer.App;
 /// Resolves the same registered file icons and thumbnails used by Windows Shell.
 /// Only realized rows request an icon, and reusable file-type icons are cached.
 /// </summary>
+/// <remarks>
+/// Images are read through IShellItemImageFactory on a background thread and copied
+/// into a <see cref="WriteableBitmap"/>. Decoding StorageFile thumbnail streams with
+/// BitmapImage.SetSourceAsync crashed the process inside WinUI (stowed E_UNEXPECTED)
+/// on roughly one launch in five, even for images that were never displayed.
+/// </remarks>
 internal sealed class ShellIconService
 {
     private const int RequestedIconSize = 128;
@@ -26,64 +30,25 @@ internal sealed class ShellIconService
 
         var extension = Path.GetExtension(item.Path);
         var cacheKey = string.IsNullOrEmpty(extension) ? "<no-extension>" : extension;
-        if (CanCacheByFileType(extension) && _fileTypeCache.TryGetValue(cacheKey, out var cached))
+        var isImage = item.IsImageFile;
+        // Shell icons are reusable for a registered file type. Image previews and
+        // executable/shortcut icons are item-specific and must never be shared.
+        var cacheable = !isImage && CanCacheByFileType(extension);
+        if (cacheable && _fileTypeCache.TryGetValue(cacheKey, out var cached))
         {
             return cached;
         }
 
+        (byte[] Pixels, int Width, int Height)? pixels;
         await _concurrency.WaitAsync();
         try
         {
-            var isImage = item.IsImageFile;
-            var requestedSize = (uint)(isImage ? RequestedImagePreviewSize : RequestedIconSize);
-            var file = await StorageFile.GetFileFromPathAsync(item.Path)
-                .AsTask()
+            var path = item.Path;
+            var size = isImage ? RequestedImagePreviewSize : RequestedIconSize;
+            pixels = await Task.Run(async () =>
+                    (isImage ? await TryDecodePreviewAsync(path, size) : null)
+                    ?? ShellItemImage.GetIconPixels(path, size))
                 .WaitAsync(ShellRequestTimeout);
-            if (isImage)
-            {
-                using var stream = await file.OpenReadAsync()
-                    .AsTask()
-                    .WaitAsync(ShellRequestTimeout);
-                var preview = new BitmapImage
-                {
-                    DecodePixelWidth = RequestedImagePreviewSize,
-                    DecodePixelType = DecodePixelType.Logical
-                };
-                await preview.SetSourceAsync(stream)
-                    .AsTask()
-                    .WaitAsync(ShellRequestTimeout);
-                return preview;
-            }
-            using var thumbnail = await file.GetThumbnailAsync(
-                    ThumbnailMode.ListView,
-                    requestedSize,
-                    // UseCurrentScale and ResizeThumbnail are mutually exclusive; combining them
-                    // made every request throw, so file-type icons never loaded.
-                    ThumbnailOptions.UseCurrentScale)
-                .AsTask()
-                .WaitAsync(ShellRequestTimeout);
-
-            if (thumbnail is null || thumbnail.Size == 0) return null;
-
-            var image = new BitmapImage
-            {
-                DecodePixelWidth = (int)requestedSize,
-                DecodePixelType = DecodePixelType.Logical
-            };
-            await image.SetSourceAsync(thumbnail)
-                .AsTask()
-                .WaitAsync(ShellRequestTimeout);
-
-            // Shell icons are reusable for a registered file type. Image thumbnails and
-            // executable/shortcut icons are item-specific and must never be shared.
-            if (thumbnail.Type == ThumbnailType.Icon
-                && CanCacheByFileType(extension)
-                && _fileTypeCache.Count < MaximumCachedFileTypes)
-            {
-                _fileTypeCache[cacheKey] = image;
-            }
-
-            return image;
         }
         catch (Exception)
         {
@@ -95,6 +60,17 @@ internal sealed class ShellIconService
         {
             _concurrency.Release();
         }
+
+        if (pixels is not { } image) return null;
+        if (cacheable && _fileTypeCache.TryGetValue(cacheKey, out cached)) return cached;
+
+        var bitmap = await CreateBitmapAsync(image);
+        if (cacheable && _fileTypeCache.Count < MaximumCachedFileTypes)
+        {
+            _fileTypeCache[cacheKey] = bitmap;
+        }
+
+        return bitmap;
     }
 
     /// <summary>
@@ -132,10 +108,55 @@ internal sealed class ShellIconService
         }
 
         if (icon is not { } pixels) return null;
-        var bitmap = new WriteableBitmap(pixels.Width, pixels.Height);
+        return await CreateBitmapAsync(pixels);
+    }
+
+    /// <summary>
+    /// Decodes a downscaled preview of an image file off the UI thread. Returns null for
+    /// formats without an installed decoder (such as SVG), which then show their icon.
+    /// </summary>
+    private static async Task<(byte[] Pixels, int Width, int Height)?> TryDecodePreviewAsync(string path, int size)
+    {
+        try
+        {
+            var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(path);
+            using var stream = await file.OpenReadAsync();
+            var decoder = await Windows.Graphics.Imaging.BitmapDecoder.CreateAsync(stream);
+            var width = decoder.OrientedPixelWidth;
+            var height = decoder.OrientedPixelHeight;
+            if (width == 0 || height == 0) return null;
+
+            var scale = Math.Min(1.0, (double)size / Math.Max(width, height));
+            var targetWidth = (uint)Math.Max(1, Math.Round(width * scale));
+            var targetHeight = (uint)Math.Max(1, Math.Round(height * scale));
+            // Scaling applies before EXIF rotation, so swap the axes for rotated photos.
+            var rotated = decoder.OrientedPixelWidth != decoder.PixelWidth;
+            var transform = new Windows.Graphics.Imaging.BitmapTransform
+            {
+                ScaledWidth = rotated ? targetHeight : targetWidth,
+                ScaledHeight = rotated ? targetWidth : targetHeight,
+                InterpolationMode = Windows.Graphics.Imaging.BitmapInterpolationMode.Fant
+            };
+            var data = await decoder.GetPixelDataAsync(
+                Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8,
+                Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied,
+                transform,
+                Windows.Graphics.Imaging.ExifOrientationMode.RespectExifOrientation,
+                Windows.Graphics.Imaging.ColorManagementMode.ColorManageToSRgb);
+            return (data.DetachPixelData(), (int)targetWidth, (int)targetHeight);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<WriteableBitmap> CreateBitmapAsync((byte[] Pixels, int Width, int Height) image)
+    {
+        var bitmap = new WriteableBitmap(image.Width, image.Height);
         using (var buffer = bitmap.PixelBuffer.AsStream())
         {
-            await buffer.WriteAsync(pixels.Pixels);
+            await buffer.WriteAsync(image.Pixels);
         }
         bitmap.Invalidate();
         return bitmap;
