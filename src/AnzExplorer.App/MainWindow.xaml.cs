@@ -2136,7 +2136,9 @@ public sealed partial class MainWindow : Window
         StatusText.Text = sources.Length == 1
             ? $"Dragging {sources[0].Name}…"
             : $"Dragging {sources.Length} items…";
-        e.Data.RequestedOperation = DataPackageOperation.Move;
+        // Offer both, like File Explorer: the drop target picks one (Ctrl copies). With Move
+        // alone, Windows cancelled every Ctrl+drop, because a copy was never allowed.
+        e.Data.RequestedOperation = DataPackageOperation.Move | DataPackageOperation.Copy;
         e.Data.Properties.Title = sources.Length == 1 ? sources[0].Name : $"{sources.Length} items";
         e.Data.SetText(string.Join(Environment.NewLine, sources.Select(source => source.Path)));
         e.Data.SetData(InternalFilePathsFormat, string.Join(Environment.NewLine, sources.Select(source => source.Path)));
@@ -2534,19 +2536,20 @@ public sealed partial class MainWindow : Window
 
     private void FileRow_DragOver(object sender, DragEventArgs e)
     {
+        // Only folders are drop targets themselves. Over a file, the drop goes to the
+        // folder being shown, as in File Explorer. Rejecting it left only the empty space
+        // below the last row able to accept a drop.
+        if (sender is not FrameworkElement { DataContext: FileSystemItemViewModel { IsFolder: true } targetFolder })
+        {
+            FileList_DragOver(sender, e);
+            return;
+        }
+
         _tabHoverTimer.Stop();
         _hoveredDropTab = null;
         e.Handled = true;
         try
         {
-            if (sender is not FrameworkElement
-                {
-                    DataContext: FileSystemItemViewModel { IsFolder: true } targetFolder
-                })
-            {
-                RejectDrop(e);
-                return;
-            }
 
             BeginControlledDragScrolling();
             _dragPosition = e.GetPosition(FileList);
@@ -2573,14 +2576,16 @@ public sealed partial class MainWindow : Window
 
     private async void FileRow_Drop(object sender, DragEventArgs e)
     {
+        if (sender is not FrameworkElement { DataContext: FileSystemItemViewModel { IsFolder: true } targetFolder })
+        {
+            FileList_Drop(sender, e);
+            return;
+        }
+
         e.Handled = true;
         try
         {
-            if (sender is not FrameworkElement
-                {
-                    DataContext: FileSystemItemViewModel { IsFolder: true } targetFolder
-                }
-                || !CanAcceptDropAt(e, targetFolder.Path))
+            if (!CanAcceptDropAt(e, targetFolder.Path))
             {
                 RejectDrop(e);
                 EndControlledDragScrolling();
