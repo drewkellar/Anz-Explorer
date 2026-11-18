@@ -47,10 +47,13 @@ public sealed partial class MainWindow : Window
     private readonly ObservableCollection<FileSystemItemViewModel> _emptyItems = [];
     private readonly DispatcherTimer _driveRefreshTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private readonly DispatcherTimer _dragScrollTimer = new() { Interval = TimeSpan.FromMilliseconds(75) };
-    private readonly DispatcherTimer _tabHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(350) };
+    private readonly DispatcherTimer _tabHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(150) };
     // Watches the real pointer while a file drag is in progress, so hovering a tab switches
     // to it even when no drag events reach the title-bar area the tabs live in (issue #2).
-    private readonly DispatcherTimer _dragTabProbeTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    private readonly DispatcherTimer _dragTabProbeTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
+    // The folder row a drop would go into, highlighted so the target is visible.
+    private Microsoft.UI.Xaml.Controls.Panel? _dropHighlightRow;
+    private object? _dropHighlightOriginalBackground;
     // Modifier keys as last seen while the mouse button was still held. Drag completion is
     // reported after the release, by which time Ctrl may already be up again.
     private bool _dragControlDown;
@@ -2171,6 +2174,7 @@ public sealed partial class MainWindow : Window
     {
         Breadcrumb("File drag end", $"result={args.DropResult} handledInApp={_dropHandledInApp}");
         _dragTabProbeTimer.Stop();
+        SetDropHighlight(null);
         // A drop released over a tab lands in the title-bar area, outside XAML, and is
         // reported as "None". The button being up (rather than held during an Esc cancel)
         // tells the two apart; such a drop goes to that tab's folder, as in File Explorer.
@@ -2211,6 +2215,7 @@ public sealed partial class MainWindow : Window
 
     private void FileList_DragOver(object sender, DragEventArgs e)
     {
+        SetDropHighlight(null);
         _tabHoverTimer.Stop();
         _hoveredDropTab = null;
         try
@@ -2246,12 +2251,14 @@ public sealed partial class MainWindow : Window
             || position.Y > FileList.ActualHeight)
         {
             _pendingDropDestination = null;
+            SetDropHighlight(null);
             EndControlledDragScrolling();
         }
     }
 
     private async void FileList_Drop(object sender, DragEventArgs e)
     {
+        SetDropHighlight(null);
         try
         {
             var destination = _pendingDropDestination;
@@ -2560,6 +2567,7 @@ public sealed partial class MainWindow : Window
             }
 
             _pendingDropDestination = targetFolder.Path;
+            SetDropHighlight(sender as Microsoft.UI.Xaml.Controls.Panel);
             var operation = ResolveDropOperation(e, targetFolder.Path);
             e.AcceptedOperation = operation;
             e.DragUIOverride.Caption = $"{(operation == DataPackageOperation.Move ? "Move" : "Copy")} to {targetFolder.Name}";
@@ -2583,6 +2591,7 @@ public sealed partial class MainWindow : Window
         }
 
         e.Handled = true;
+        SetDropHighlight(null);
         try
         {
             if (!CanAcceptDropAt(e, targetFolder.Path))
@@ -2607,8 +2616,30 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Highlights the folder row a drop would go into, or clears the highlight (null).
+    /// </summary>
+    private void SetDropHighlight(Microsoft.UI.Xaml.Controls.Panel? row)
+    {
+        if (ReferenceEquals(row, _dropHighlightRow)) return;
+        if (_dropHighlightRow is { } previous)
+        {
+            if (_dropHighlightOriginalBackground == DependencyProperty.UnsetValue)
+                previous.ClearValue(Microsoft.UI.Xaml.Controls.Panel.BackgroundProperty);
+            else
+                previous.SetValue(Microsoft.UI.Xaml.Controls.Panel.BackgroundProperty, _dropHighlightOriginalBackground);
+        }
+
+        _dropHighlightRow = row;
+        _dropHighlightOriginalBackground = null;
+        if (row is null) return;
+        _dropHighlightOriginalBackground = row.ReadLocalValue(Microsoft.UI.Xaml.Controls.Panel.BackgroundProperty);
+        row.Background = (Microsoft.UI.Xaml.Media.Brush)RootLayout.Resources["ListViewItemBackgroundSelectedPointerOver"];
+    }
+
     private void RejectDrop(DragEventArgs e)
     {
+        SetDropHighlight(null);
         _pendingDropDestination = null;
         e.AcceptedOperation = DataPackageOperation.None;
     }
