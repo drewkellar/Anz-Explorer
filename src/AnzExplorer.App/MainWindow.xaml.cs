@@ -48,6 +48,13 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherTimer _driveRefreshTimer = new() { Interval = TimeSpan.FromSeconds(5) };
     private readonly DispatcherTimer _dragScrollTimer = new() { Interval = TimeSpan.FromMilliseconds(75) };
     private readonly DispatcherTimer _tabHoverTimer = new() { Interval = TimeSpan.FromMilliseconds(350) };
+    // Watches the real pointer while a file drag is in progress, so hovering a tab switches
+    // to it even when no drag events reach the title-bar area the tabs live in (issue #2).
+    private readonly DispatcherTimer _dragTabProbeTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    // Modifier keys as last seen while the mouse button was still held. Drag completion is
+    // reported after the release, by which time Ctrl may already be up again.
+    private bool _dragControlDown;
+    private bool _dragShiftDown;
     private readonly string? _requestedPath;
     private ExplorerSettings _settings = new();
     // Sidebar state is owned by App so every window edits and saves the same list.
@@ -184,6 +191,7 @@ public sealed partial class MainWindow : Window
         _driveRefreshTimer.Tick += DriveRefreshTimer_Tick;
         _dragScrollTimer.Tick += DragScrollTimer_Tick;
         _tabHoverTimer.Tick += TabHoverTimer_Tick;
+        _dragTabProbeTimer.Tick += DragTabProbeTimer_Tick;
         _initializationTask = InitializeAsync();
     }
 
@@ -1612,7 +1620,9 @@ public sealed partial class MainWindow : Window
     internal bool ContainsScreenPointInTabStrip(Windows.Graphics.PointInt32 screenPoint)
     {
         var scale = RootLayout.XamlRoot?.RasterizationScale ?? 1;
-        var left = AppWindow.Position.X + (210 * scale);
+        // The strip starts where the TabView does (it used to follow a 210 px logo column).
+        var tabsLeft = Tabs.TransformToVisual(RootLayout).TransformPoint(default).X;
+        var left = AppWindow.Position.X + (int)(tabsLeft * scale);
         var right = AppWindow.Position.X + AppWindow.Size.Width - (140 * scale);
         var top = AppWindow.Position.Y;
         var bottom = top + (44 * scale);
@@ -2120,6 +2130,9 @@ public sealed partial class MainWindow : Window
         _dropHandledInApp = false;
         _pendingDropDestination = null;
         BeginControlledDragScrolling();
+        _dragControlDown = NativeInput.IsControlDown;
+        _dragShiftDown = NativeInput.IsShiftDown;
+        _dragTabProbeTimer.Start();
         StatusText.Text = sources.Length == 1
             ? $"Dragging {sources[0].Name}…"
             : $"Dragging {sources.Length} items…";
@@ -2155,6 +2168,16 @@ public sealed partial class MainWindow : Window
     private async void FileList_DragItemsCompleted(object sender, DragItemsCompletedEventArgs args)
     {
         Breadcrumb("File drag end", $"result={args.DropResult} handledInApp={_dropHandledInApp}");
+        _dragTabProbeTimer.Stop();
+        // A drop released over a tab lands in the title-bar area, outside XAML, and is
+        // reported as "None". The button being up (rather than held during an Esc cancel)
+        // tells the two apart; such a drop goes to that tab's folder, as in File Explorer.
+        var droppedOnTab = !_dropHandledInApp
+            && args.DropResult == DataPackageOperation.None
+            && !NativeInput.IsLeftButtonDown
+                ? FindTabUnderCursor()
+                : null;
+        var droppedItems = _draggedItems.ToArray();
         EndControlledDragScrolling();
         _tabHoverTimer.Stop();
         _hoveredDropTab = null;
@@ -2169,7 +2192,11 @@ public sealed partial class MainWindow : Window
         _dropHandledInApp = false;
         _pendingDropDestination = null;
         _draggedItems = [];
-        if (!handledInApp && args.DropResult == DataPackageOperation.Move && sourceTab is { } tab)
+        if (droppedOnTab is { Tag: TabRuntime targetRuntime })
+        {
+            await DropOnTabAsync(droppedOnTab, targetRuntime, droppedItems, sourceTab);
+        }
+        else if (!handledInApp && args.DropResult == DataPackageOperation.Move && sourceTab is { } tab)
         {
             tab.LoadedPath = null;
             if (ReferenceEquals(tab, ActiveTab)) await NavigateAsync(tab.Session.CurrentPath, false);
@@ -2664,14 +2691,7 @@ public sealed partial class MainWindow : Window
         if ((e.Modifiers & DataTransferDragDropModifiers.Shift) == DataTransferDragDropModifiers.Shift)
             return DataPackageOperation.Move;
 
-        if (_draggedItems.Count > 0)
-        {
-            var destinationRoot = Path.GetPathRoot(destination);
-            return _draggedItems.All(item => string.Equals(
-                    Path.GetPathRoot(item.Path), destinationRoot, StringComparison.OrdinalIgnoreCase))
-                ? DataPackageOperation.Move
-                : DataPackageOperation.Copy;
-        }
+        if (_draggedItems.Count > 0) return DefaultDropOperation(_draggedItems, destination);
 
         return e.DataView.RequestedOperation == DataPackageOperation.Move
             ? DataPackageOperation.Move
@@ -2690,15 +2710,37 @@ public sealed partial class MainWindow : Window
         var deferral = e.GetDeferral();
         _tabHoverTimer.Stop();
         _hoveredDropTab = null;
-        var sourceTab = _fileDragSourceTab;
         var draggedItems = _draggedItems.ToArray();
-        Breadcrumb("Drop", $"{operation} internalItems={draggedItems.Length} to {Shape(destination)}");
+        try
+        {
+            await TransferDroppedItemsAsync(
+                draggedItems,
+                async () => await e.DataView.GetStorageItemsAsync(),
+                destination,
+                operation,
+                _fileDragSourceTab);
+        }
+        finally
+        {
+            _draggedItems = [];
+            deferral.Complete();
+        }
+    }
+
+    private async Task TransferDroppedItemsAsync(
+        IReadOnlyList<FileSystemItemViewModel> draggedItems,
+        Func<Task<IReadOnlyList<Windows.Storage.IStorageItem>>> externalItems,
+        string destination,
+        DataPackageOperation operation,
+        TabRuntime? sourceTab)
+    {
+        Breadcrumb("Drop", $"{operation} internalItems={draggedItems.Count} to {Shape(destination)}");
         StatusText.Text = $"{(operation == DataPackageOperation.Move ? "Moving" : "Copying")} items…";
         try
         {
-            var storageItems = draggedItems.Length > 0
+            var storageItems = draggedItems.Count > 0
                 ? await FileTransferService.GetStorageItemsAsync(draggedItems)
-                : await e.DataView.GetStorageItemsAsync();
+                : await externalItems();
             var failures = await FileTransferService.TransferAsync(
                 storageItems,
                 destination,
@@ -2737,11 +2779,103 @@ public sealed partial class MainWindow : Window
         {
             await ShowErrorAsync("The dropped items could not be transferred.", exception);
         }
-        finally
+    }
+
+    /// <summary>Moves or copies items released over a tab into that tab's folder.</summary>
+    private async Task DropOnTabAsync(
+        TabViewItem targetTab,
+        TabRuntime target,
+        IReadOnlyList<FileSystemItemViewModel> items,
+        TabRuntime? sourceTab)
+    {
+        var destination = target.Session.CurrentPath;
+        Tabs.SelectedItem = targetTab;
+        if (items.Count == 0
+            || destination == SpecialLocations.ThisPc
+            || !Directory.Exists(destination)
+            || items.Any(item => item.IsFolder && PathCanonicalizer.IsSameOrDescendant(destination, item.Path))
+            || items.All(item => PathsEqual(item.Path, Path.Combine(destination, item.Name))))
         {
-            _draggedItems = [];
-            deferral.Complete();
+            UpdateStatusText();
+            return;
         }
+
+        var operation = _dragControlDown || NativeInput.IsControlDown ? DataPackageOperation.Copy
+            : _dragShiftDown || NativeInput.IsShiftDown ? DataPackageOperation.Move
+            : DefaultDropOperation(items, destination);
+        await TransferDroppedItemsAsync(
+            items,
+            () => Task.FromResult<IReadOnlyList<Windows.Storage.IStorageItem>>([]),
+            destination,
+            operation,
+            sourceTab);
+    }
+
+    /// <summary>File Explorer's default: move within a drive, copy across drives.</summary>
+    private static DataPackageOperation DefaultDropOperation(
+        IReadOnlyList<FileSystemItemViewModel> items,
+        string destination)
+    {
+        var destinationRoot = Path.GetPathRoot(destination);
+        return items.All(item => string.Equals(
+                Path.GetPathRoot(item.Path), destinationRoot, StringComparison.OrdinalIgnoreCase))
+            ? DataPackageOperation.Move
+            : DataPackageOperation.Copy;
+    }
+
+    /// <summary>The tab header under the real pointer, if any.</summary>
+    private TabViewItem? FindTabUnderCursor()
+    {
+        if (RootLayout.XamlRoot is not { } root
+            || !NativeInput.TryGetCursorClientPosition(
+                WinRT.Interop.WindowNative.GetWindowHandle(this), out var x, out var y))
+        {
+            return null;
+        }
+
+        var point = new Windows.Foundation.Point(x / root.RasterizationScale, y / root.RasterizationScale);
+        foreach (var header in Tabs.TabItems.OfType<TabViewItem>())
+        {
+            if (header.ActualWidth <= 0) continue;
+            try
+            {
+                var bounds = header.TransformToVisual(RootLayout).TransformBounds(
+                    new Windows.Foundation.Rect(0, 0, header.ActualWidth, header.ActualHeight));
+                if (bounds.Contains(point)) return header;
+            }
+            catch (InvalidOperationException)
+            {
+                // A tab can briefly be between visual parents during a transfer.
+            }
+        }
+
+        return null;
+    }
+
+    private void DragTabProbeTimer_Tick(object? sender, object e)
+    {
+        if (NativeInput.IsLeftButtonDown)
+        {
+            _dragControlDown = NativeInput.IsControlDown;
+            _dragShiftDown = NativeInput.IsShiftDown;
+        }
+
+        var tab = FindTabUnderCursor();
+        if (tab is null || ReferenceEquals(Tabs.SelectedItem, tab))
+        {
+            if (_hoveredDropTab is not null && !ReferenceEquals(_hoveredDropTab, tab))
+            {
+                _tabHoverTimer.Stop();
+                _hoveredDropTab = null;
+            }
+            return;
+        }
+
+        // Switch after a short hover, so sweeping across the strip doesn't flip every tab.
+        if (ReferenceEquals(_hoveredDropTab, tab)) return;
+        _hoveredDropTab = tab;
+        _tabHoverTimer.Stop();
+        _tabHoverTimer.Start();
     }
 
     private async void OpenSelected_Click(object sender, RoutedEventArgs e) => await OpenSelectedAsync();
