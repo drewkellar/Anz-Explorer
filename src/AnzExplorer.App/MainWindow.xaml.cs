@@ -53,8 +53,15 @@ public sealed partial class MainWindow : Window
     // Sidebar state is owned by App so every window edits and saves the same list.
     private List<SidebarGroup> _sidebarGroups => ((App)Application.Current).SidebarGroups;
     private CancellationTokenSource? _navigationCancellation;
+    private int _navigationRequest;
+    // This PC has its own view, like File Explorer: tiles by default whatever the tab
+    // uses for folders. Changing the view while on This PC changes only this.
+    private FileViewMode _thisPcViewMode = FileViewMode.Tiles;
     private CancellationTokenSource? _searchCancellation;
     private bool _initializing = true;
+    // WinUI otherwise gives startup focus to the first tab stop, the add-tab button, and
+    // draws a focus ring on it. The first loaded folder takes focus instead, as in File Explorer.
+    private bool _focusFileListAfterFirstLoad = true;
     // False if settings could not be read; saving defaults then would erase the user's file.
     private bool _settingsLoaded;
     private bool _driveRefreshRunning;
@@ -159,6 +166,8 @@ public sealed partial class MainWindow : Window
         // entire title-bar grid is registered, tiny movements on a tab can invoke
         // the OS window-drag animation before XAML receives the pointer sequence.
         SetTitleBar(TitleBarDragRegion);
+        // The TabView template is applied after Loaded, so wait one dispatcher pass.
+        Tabs.Loaded += (_, _) => DispatcherQueue.TryEnqueue(AlignAddTabButton);
         if (_startEmpty)
         {
             AppWindow.IsShownInSwitchers = false;
@@ -504,6 +513,10 @@ public sealed partial class MainWindow : Window
             ItemContainerTransitions = null,
             Transitions = null
         };
+        list.GroupStyle.Add(new GroupStyle
+        {
+            HeaderTemplate = (DataTemplate)RootLayout.Resources["LocationGroupHeaderTemplate"]
+        });
         Grid.SetRow(list, 1);
         AttachFileListHandlers(list);
         FileViewHost.Children.Insert(Math.Max(0, FileViewHost.Children.Count - 1), list);
@@ -528,7 +541,7 @@ public sealed partial class MainWindow : Window
         ListViewBase sender,
         ContainerContentChangingEventArgs args)
     {
-        if (args.Item is not FileSystemItemViewModel item || item.IsFolder || item.IsDrive)
+        if (args.Item is not FileSystemItemViewModel item || (item.IsFolder && !item.IsDrive))
         {
             return;
         }
@@ -556,7 +569,17 @@ public sealed partial class MainWindow : Window
 
         item.ShellIconLoadRequested = true;
         var container = args.ItemContainer;
-        var icon = await _shellIcons.GetIconAsync(item);
+        var icon = item.IsDrive
+            ? await _shellIcons.GetLocationIconAsync(item)
+            : await _shellIcons.GetIconAsync(item);
+        if (item.IsDrive)
+        {
+            // Location icons are small, so always keep them. A cached icon arrives
+            // synchronously, inside this realization callback, where the new value is
+            // not picked up by the tile; assign it on the next dispatcher pass instead.
+            DispatcherQueue.TryEnqueue(() => item.ShellIcon = icon);
+            return;
+        }
         if (!ReferenceEquals(sender.ContainerFromItem(item), container)
             || !ReferenceEquals(container.Content, item))
         {
@@ -608,15 +631,44 @@ public sealed partial class MainWindow : Window
         UpdateEmptyFolderState();
     }
 
+    /// <summary>
+    /// Shows This PC in titled sections (Devices and drives, Network locations) and
+    /// every other folder as a flat list. tab.Items stays the flat list in display order.
+    /// </summary>
+    private static void BindItemsSource(TabRuntime tab)
+    {
+        if (tab.FileList is not { } list) return;
+        if (tab.LoadedPath == SpecialLocations.ThisPc)
+        {
+            var groups = tab.Items
+                .GroupBy(item => item.GroupName)
+                .Select(group => new LocationGroup(group.Key, group))
+                .ToList();
+            list.ItemsSource = new Microsoft.UI.Xaml.Data.CollectionViewSource { IsSourceGrouped = true, Source = groups }.View;
+        }
+        else if (!ReferenceEquals(list.ItemsSource, tab.Items))
+        {
+            list.ItemsSource = tab.Items;
+        }
+    }
+
+    private FileViewMode GetEffectiveViewMode(TabRuntime runtime)
+    {
+        var mode = runtime.Session.CurrentPath == SpecialLocations.ThisPc
+            ? _thisPcViewMode
+            : runtime.Session.ViewMode;
+        return mode == FileViewMode.Icons ? FileViewMode.MediumIcons : mode;
+    }
+
     private void ApplyViewMode(TabRuntime runtime)
     {
         if (runtime.FileList is not { } list) return;
-        var mode = runtime.Session.ViewMode == FileViewMode.Icons
-            ? FileViewMode.MediumIcons
-            : runtime.Session.ViewMode;
+        var mode = GetEffectiveViewMode(runtime);
         var isDetails = mode == FileViewMode.Details;
+        // This PC shows drive tiles in every icon-style view, as File Explorer does.
+        var thisPcTiles = !isDetails && runtime.Session.CurrentPath == SpecialLocations.ThisPc;
 
-        if (runtime.AppliedViewMode != mode)
+        if (runtime.AppliedViewMode != mode || runtime.AppliedThisPcLayout != thisPcTiles)
         {
             var templateKey = mode switch
             {
@@ -636,6 +688,12 @@ public sealed partial class MainWindow : Window
                 _ => "WrappingItemsPanel"
             };
 
+            if (thisPcTiles)
+            {
+                templateKey = "DriveTileTemplate";
+                panelKey = "WrappingItemsPanel";
+            }
+
             list.ItemTemplate = (DataTemplate)RootLayout.Resources[templateKey];
             list.ItemsPanel = (ItemsPanelTemplate)RootLayout.Resources[panelKey];
             if (isDetails)
@@ -652,6 +710,7 @@ public sealed partial class MainWindow : Window
             Grid.SetRow(list, isDetails ? 1 : 0);
             Grid.SetRowSpan(list, isDetails ? 1 : 2);
             runtime.AppliedViewMode = mode;
+            runtime.AppliedThisPcLayout = thisPcTiles;
             runtime.ScrollViewer = null;
         }
 
@@ -745,6 +804,7 @@ public sealed partial class MainWindow : Window
         Breadcrumb("Navigate", $"{Shape(path)} addHistory={addHistory} search={!string.IsNullOrEmpty(SearchBox.Text)}");
 
         string canonical = SpecialLocations.ThisPc;
+        if (path == SpecialLocations.ThisPc) _navigationRequest++;
         if (path != SpecialLocations.ThisPc)
         {
             try
@@ -757,8 +817,16 @@ public sealed partial class MainWindow : Window
                 return;
             }
 
-            if (!Directory.Exists(canonical))
+            // An offline network share can take a long time to answer, so never ask
+            // on the UI thread. A newer navigation makes this one obsolete.
+            var request = ++_navigationRequest;
+            var isNetworkPath = canonical.StartsWith(@"\\", StringComparison.Ordinal);
+            if (isNetworkPath) StatusText.Text = $"Connecting to {canonical}…";
+            var exists = await Task.Run(() => Directory.Exists(canonical));
+            if (request != _navigationRequest) return;
+            if (!exists)
             {
+                if (isNetworkPath) UpdateStatusText();
                 await ShowErrorAsync("That folder is unavailable.", new DirectoryNotFoundException(canonical));
                 return;
             }
@@ -820,7 +888,9 @@ public sealed partial class MainWindow : Window
             if (canonical == SpecialLocations.ThisPc)
             {
                 var search = SearchBox.Text;
-                entries = DriveService.ToViewModels(_drives)
+                var networkLocations = await Task.Run(NetworkLocationService.GetNetworkLocations, cancellationToken);
+                // Kept in section order (devices, then network); sorting would mix the groups.
+                entries = DriveService.ToViewModels(_drives, networkLocations)
                     .Where(item => string.IsNullOrWhiteSpace(search)
                         || item.Name.Contains(search, StringComparison.OrdinalIgnoreCase))
                     .ToArray();
@@ -828,9 +898,8 @@ public sealed partial class MainWindow : Window
             else
             {
                 entries = await _directoryService.EnumerateAsync(canonical, SearchBox.Text, cancellationToken);
+                entries = SortEntries(entries, tab.Session.SortProperty, tab.Session.SortDirection);
             }
-
-            entries = SortEntries(entries, tab.Session.SortProperty, tab.Session.SortDirection);
 
             tab.Items.Clear();
             for (var index = 0; index < entries.Count; index++)
@@ -842,7 +911,17 @@ public sealed partial class MainWindow : Window
 
             tab.LoadedPath = canonical;
             tab.LoadedSearch = SearchBox.Text;
+            // Template first, then items, so This PC tiles are realized only once.
+            ApplyViewMode(tab);
+            BindItemsSource(tab);
             Breadcrumb("Navigate done", $"items={entries.Count} in {navigationTimer.ElapsedMilliseconds} ms");
+            if (_focusFileListAfterFirstLoad)
+            {
+                _focusFileListAfterFirstLoad = false;
+                var list = FileList;
+                DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+                    () => list.Focus(FocusState.Programmatic));
+            }
 
             UpdateStatusText();
             UpdateEmptyFolderState();
@@ -927,6 +1006,8 @@ public sealed partial class MainWindow : Window
     private void ApplyCurrentSort()
     {
         if (ActiveTab is not { } tab) return;
+        // This PC keeps its fixed sections; there is nothing meaningful to sort.
+        if (tab.Session.CurrentPath == SpecialLocations.ThisPc) return;
         ((App)Application.Current).FolderSortPreferences[tab.Session.CurrentPath] = new(
             tab.Session.CurrentPath, tab.Session.SortProperty, tab.Session.SortDirection);
         var selectedPaths = FileList.SelectedItems
@@ -950,7 +1031,7 @@ public sealed partial class MainWindow : Window
                 items.Add(sorted[index]);
             }
         }
-        finally { list.ItemsSource = items; }
+        finally { BindItemsSource(tab); }
 
         RestoreFileViewState(selectedPaths, offset);
     }
@@ -1661,6 +1742,7 @@ public sealed partial class MainWindow : Window
     {
         BreadcrumbPanel.Children.Clear();
         var segments = CreateBreadcrumbSegments(path);
+        SearchBox.PlaceholderText = segments.Count > 0 ? $"Search {segments[^1].Label}" : "Search";
         for (var index = 0; index < segments.Count; index++)
         {
             var segment = segments[index];
@@ -1975,6 +2057,33 @@ public sealed partial class MainWindow : Window
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Tabs reach the bottom of the strip so the selected one joins the navigation row.
+    /// TabView's add button also touched that row, which made it look sunk into the
+    /// address bar; shrink it so it floats level with the tab labels.
+    /// </summary>
+    private void AlignAddTabButton()
+    {
+        if (FindNamedDescendant(Tabs, "AddButton") is not Button addButton) return;
+        addButton.VerticalAlignment = VerticalAlignment.Bottom;
+        addButton.Height = 26;
+        addButton.Margin = new Thickness(4, 0, 0, 3);
+        addButton.CornerRadius = new CornerRadius(5);
+    }
+
+    private static FrameworkElement? FindNamedDescendant(DependencyObject current, string name)
+    {
+        var childCount = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(current);
+        for (var index = 0; index < childCount; index++)
+        {
+            var child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(current, index);
+            if (child is FrameworkElement element && element.Name == name) return element;
+            if (FindNamedDescendant(child, name) is { } descendant) return descendant;
+        }
+
+        return null;
     }
 
     private static T? FindDescendant<T>(DependencyObject current) where T : DependencyObject
@@ -3382,8 +3491,7 @@ public sealed partial class MainWindow : Window
 
     private void UpdateViewMenuChecks()
     {
-        var mode = ActiveTab?.Session.ViewMode ?? FileViewMode.Details;
-        if (mode == FileViewMode.Icons) mode = FileViewMode.MediumIcons;
+        var mode = ActiveTab is { } tab ? GetEffectiveViewMode(tab) : FileViewMode.Details;
         SetViewModeChecked(FileViewMode.ExtraLargeIcons, ViewExtraLargeMenuItem, BackgroundViewExtraLargeMenuItem);
         SetViewModeChecked(FileViewMode.LargeIcons, ViewLargeMenuItem, BackgroundViewLargeMenuItem);
         SetViewModeChecked(FileViewMode.MediumIcons, ViewMediumMenuItem, BackgroundViewMediumMenuItem);
@@ -3409,7 +3517,10 @@ public sealed partial class MainWindow : Window
         }
 
         Breadcrumb("View mode", mode.ToString());
-        tab.Session = tab.Session with { ViewMode = mode, ScrollOffset = 0 };
+        if (tab.Session.CurrentPath == SpecialLocations.ThisPc)
+            _thisPcViewMode = mode;
+        else
+            tab.Session = tab.Session with { ViewMode = mode, ScrollOffset = 0 };
         tab.AppliedViewMode = null;
         ApplyViewMode(tab);
         UpdateViewMenuChecks();

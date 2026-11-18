@@ -13,6 +13,7 @@
                     <SolidColorBrush x:Key="AnzPaneBackgroundBrush" Color="#FF111820" />
                     <SolidColorBrush x:Key="AnzSurfaceBrush" Color="#FF1B232D" />
                     <SolidColorBrush x:Key="AnzSurfaceRaisedBrush" Color="#FF222C38" />
+                    <SolidColorBrush x:Key="AnzInputBrush" Color="#FF2C3745" />
                     <SolidColorBrush x:Key="AnzRowEvenBrush" Color="#FF171D25" />
                     <SolidColorBrush x:Key="AnzRowOddBrush" Color="#FF151A21" />
                     <SolidColorBrush x:Key="AnzBorderBrush" Color="#286C829A" />
@@ -46,6 +47,7 @@
                     <SolidColorBrush x:Key="AnzPaneBackgroundBrush" Color="#FFF8F9FA" />
                     <SolidColorBrush x:Key="AnzSurfaceBrush" Color="#FFFFFFFF" />
                     <SolidColorBrush x:Key="AnzSurfaceRaisedBrush" Color="#FFFDFDFE" />
+                    <SolidColorBrush x:Key="AnzInputBrush" Color="#FFFFFFFF" />
                     <SolidColorBrush x:Key="AnzRowEvenBrush" Color="#09000000" />
                     <SolidColorBrush x:Key="AnzRowOddBrush" Color="#00FFFFFF" />
                     <SolidColorBrush x:Key="AnzBorderBrush" Color="#18000000" />
@@ -79,6 +81,7 @@
                     <SolidColorBrush x:Key="AnzPaneBackgroundBrush" Color="{ThemeResource SystemColorWindowColor}" />
                     <SolidColorBrush x:Key="AnzSurfaceBrush" Color="{ThemeResource SystemColorWindowColor}" />
                     <SolidColorBrush x:Key="AnzSurfaceRaisedBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="AnzInputBrush" Color="{ThemeResource SystemColorWindowColor}" />
                     <SolidColorBrush x:Key="AnzRowEvenBrush" Color="{ThemeResource SystemColorWindowColor}" />
                     <SolidColorBrush x:Key="AnzRowOddBrush" Color="{ThemeResource SystemColorWindowColor}" />
                     <SolidColorBrush x:Key="AnzBorderBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
