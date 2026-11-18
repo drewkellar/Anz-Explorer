@@ -11,6 +11,12 @@
 
     <Grid x:Name="RootLayout" Background="{ThemeResource AnzWindowBackgroundBrush}">
         <Grid.Resources>
+            <!-- Selected rows use the Windows accent so they stand out clearly from the faint
+                 grey hover highlight (issue #3). These keys only take effect on the list
+                 templates when defined here; App-level overrides were not picked up. -->
+            <SolidColorBrush x:Key="ListViewItemBackgroundSelected" Color="{ThemeResource AnzSelectionColor}" Opacity="{ThemeResource AnzSelectionOpacity}" />
+            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPointerOver" Color="{ThemeResource AnzSelectionColor}" Opacity="{ThemeResource AnzSelectionPointerOverOpacity}" />
+            <SolidColorBrush x:Key="ListViewItemBackgroundSelectedPressed" Color="{ThemeResource AnzSelectionColor}" Opacity="{ThemeResource AnzSelectionPressedOpacity}" />
             <Style x:Key="ExplorerTabStyle" TargetType="TabViewItem">
                 <Setter Property="Template">
                     <Setter.Value>
