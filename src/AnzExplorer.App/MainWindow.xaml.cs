@@ -2777,6 +2777,12 @@ public sealed partial class MainWindow : Window
             var storageItems = draggedItems.Count > 0
                 ? await FileTransferService.GetStorageItemsAsync(draggedItems)
                 : await externalItems();
+            // Entries already in view before the drop, so renamed copies ("X - Copy")
+            // can be found afterwards as the new rows.
+            var droppedIntoView = ActiveTab is { } viewTab && PathsEqual(viewTab.Session.CurrentPath, destination);
+            var existingPaths = droppedIntoView
+                ? Items.Select(item => item.Path).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                : [];
             var failures = await FileTransferService.TransferAsync(
                 storageItems,
                 destination,
@@ -2801,6 +2807,7 @@ public sealed partial class MainWindow : Window
             if (ActiveTab is { } tab)
             {
                 await NavigateAsync(tab.Session.CurrentPath, false);
+                SelectDropResult(tab.Session.CurrentPath, destination, storageItems, existingPaths);
             }
 
             if (failures.Count > 0)
@@ -2815,6 +2822,42 @@ public sealed partial class MainWindow : Window
         {
             await ShowErrorAsync("The dropped items could not be transferred.", exception);
         }
+    }
+
+    /// <summary>
+    /// Selects where a drop ended up: the dropped items when they landed in the folder
+    /// on screen, or the folder row they were dropped into.
+    /// </summary>
+    private void SelectDropResult(
+        string viewPath,
+        string destination,
+        IReadOnlyList<Windows.Storage.IStorageItem> droppedItems,
+        IReadOnlySet<string> existingPaths)
+    {
+        HashSet<string> targets;
+        if (PathsEqual(viewPath, destination))
+        {
+            var names = droppedItems.Select(item => item.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            targets = Items
+                .Where(item => names.Contains(item.Name) || !existingPaths.Contains(item.Path))
+                .Select(item => item.Path)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+        else
+        {
+            targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { destination };
+        }
+
+        // Queued after the refresh's own selection restore so this one wins.
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            var matches = Items.Where(item => targets.Contains(item.Path)).ToArray();
+            if (matches.Length == 0) return;
+            FileList.SelectedItems.Clear();
+            foreach (var item in matches) FileList.SelectedItems.Add(item);
+            FileList.ScrollIntoView(matches[0], ScrollIntoViewAlignment.Default);
+            UpdateStatusText();
+        });
     }
 
     /// <summary>Moves or copies items released over a tab into that tab's folder.</summary>
