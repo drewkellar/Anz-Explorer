@@ -11,13 +11,15 @@ public partial class App : Application
     internal Dictionary<string, FolderSortPreference> FolderSortPreferences { get; } = new(StringComparer.OrdinalIgnoreCase);
     // One sidebar for every window. Seeded by the first window that loads settings successfully.
     internal List<SidebarGroup> SidebarGroups { get; } = [];
+    internal List<Guid> SidebarDeviceOrder { get; } = [];
     internal bool SidebarLoaded { get; private set; }
 
-    internal void SeedSidebar(IEnumerable<SidebarGroup> groups)
+    internal void SeedSidebar(ExplorerSettings settings)
     {
         if (SidebarLoaded) return;
         SidebarGroups.Clear();
-        SidebarGroups.AddRange(groups.OrderBy(group => group.Order));
+        SidebarGroups.AddRange(settings.SidebarGroups.OrderBy(group => group.Order));
+        SidebarDeviceOrder.AddRange(settings.SidebarDeviceOrder.Distinct());
         SidebarLoaded = true;
     }
 

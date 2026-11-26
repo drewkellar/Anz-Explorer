@@ -23,17 +23,25 @@ internal sealed class ShellIconService
     private readonly Dictionary<string, ImageSource> _fileTypeCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (byte[] Pixels, int Width, int Height)?> _locationCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _concurrency = new(6, 6);
+    private Task<WriteableBitmap?>? _textFileIcon;
 
     public async Task<ImageSource?> GetIconAsync(FileSystemItemViewModel item)
     {
         if (item.IsFolder || item.IsDrive || string.IsNullOrWhiteSpace(item.Path)) return null;
 
-        var extension = Path.GetExtension(item.Path);
+        var extension = Path.GetExtension(item.Path).ToLowerInvariant();
+        if (extension is ".txt" or ".text" or ".log")
+        {
+            return await (_textFileIcon ??= LoadTextFileIconAsync());
+        }
+
+        var useDefaultApp = extension is ".mkv" or ".mp4" or ".m4v" or ".mov" or ".avi"
+            or ".webm" or ".wmv" or ".mpeg" or ".mpg" or ".flv";
         var cacheKey = string.IsNullOrEmpty(extension) ? "<no-extension>" : extension;
         var isImage = item.IsImageFile;
         // Shell icons are reusable for a registered file type. Image previews and
         // executable/shortcut icons are item-specific and must never be shared.
-        var cacheable = !isImage && CanCacheByFileType(extension);
+        var cacheable = !isImage && !useDefaultApp && CanCacheByFileType(extension);
         if (cacheable && _fileTypeCache.TryGetValue(cacheKey, out var cached))
         {
             return cached;
@@ -45,10 +53,26 @@ internal sealed class ShellIconService
         {
             var path = item.Path;
             var size = isImage ? RequestedImagePreviewSize : RequestedIconSize;
-            pixels = await Task.Run(async () =>
-                    (isImage ? await TryDecodePreviewAsync(path, size) : null)
-                    ?? ShellItemImage.GetIconPixels(path, size))
-                .WaitAsync(ShellRequestTimeout);
+            pixels = null;
+            if (useDefaultApp)
+            {
+                // Resolve the current association for each new row, and cache by app
+                // so a change in Windows defaults can pick up the new icon.
+                var iconPath = await Task.Run(() => OpenWithService.GetDefaultApplicationIconPath(extension))
+                    .WaitAsync(ShellRequestTimeout);
+                if (iconPath is not null)
+                {
+                    cacheKey = iconPath;
+                    if (_fileTypeCache.TryGetValue(cacheKey, out cached)) return cached;
+                    pixels = await Task.Run(() => ShellItemImage.GetIconPixels(iconPath, size))
+                        .WaitAsync(ShellRequestTimeout);
+                    cacheable = pixels is not null;
+                }
+            }
+
+            pixels ??= await Task.Run(async () =>
+                (isImage ? await TryDecodePreviewAsync(path, size) : null)
+                ?? ShellItemImage.GetIconPixels(path, size)).WaitAsync(ShellRequestTimeout);
         }
         catch (Exception)
         {
@@ -71,6 +95,13 @@ internal sealed class ShellIconService
         }
 
         return bitmap;
+    }
+
+    private static async Task<WriteableBitmap?> LoadTextFileIconAsync()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "TextFile.png");
+        var image = await Task.Run(() => TryDecodePreviewAsync(path, 64));
+        return image is { } pixels ? await CreateBitmapAsync(pixels) : null;
     }
 
     /// <summary>

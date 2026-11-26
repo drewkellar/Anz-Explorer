@@ -46,6 +46,31 @@ public sealed class SettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task SidebarDeviceOrder_PreservesUnmountedDeviceWhenOtherDevicesMove()
+    {
+        var thisPc = Guid.NewGuid();
+        var disk = Guid.NewGuid();
+        var removable = Guid.NewGuid();
+        var network = Guid.NewGuid();
+        List<Guid> order = [thisPc, disk, removable, network];
+        Assert.True(SidebarOrder.TryMove(order, removable, disk, after: false));
+
+        var store = new AtomicJsonSettingsStore(new AppPaths(_root));
+        await store.SaveAsync(new ExplorerSettings { SidebarDeviceOrder = order });
+        var loaded = await store.LoadAsync();
+
+        Guid[] mounted = [thisPc, disk, network];
+        var visible = SidebarOrder.GetSavedAndNew(loaded.SidebarDeviceOrder, mounted).Where(mounted.Contains).ToList();
+        Assert.Equal(mounted, visible);
+        Assert.True(SidebarOrder.TryMove(visible, thisPc, network, after: true));
+        var saved = SidebarOrder.ApplyVisibleOrder(loaded.SidebarDeviceOrder, visible);
+
+        Guid[] remounted = [thisPc, disk, removable, network];
+        Assert.Equal([disk, removable, network, thisPc],
+            SidebarOrder.GetSavedAndNew(saved, remounted).Where(remounted.Contains));
+    }
+
+    [Fact]
     public async Task Load_AcceptsNewerSchemaAndSavePreservesUnknownSettings()
     {
         // Written by a newer build that added a setting this build does not know about.
