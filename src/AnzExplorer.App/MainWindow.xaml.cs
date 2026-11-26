@@ -62,6 +62,9 @@ public sealed partial class MainWindow : Window
     private ExplorerSettings _settings = new();
     // Sidebar state is owned by App so every window edits and saves the same list.
     private List<SidebarGroup> _sidebarGroups => ((App)Application.Current).SidebarGroups;
+    private List<Guid> _sidebarDeviceOrder => ((App)Application.Current).SidebarDeviceOrder;
+    private (NavigationViewItem Row, uint PointerId, Windows.Foundation.Point Position)? _sidebarDragCandidate;
+    private bool _sidebarDragging;
     private CancellationTokenSource? _navigationCancellation;
     private int _navigationRequest;
     // This PC has its own view, like File Explorer: tiles by default whatever the tab
@@ -171,6 +174,15 @@ public sealed partial class MainWindow : Window
             UIElement.PointerCanceledEvent,
             new PointerEventHandler(FileViewHost_PointerCanceled),
             handledEventsToo: true);
+        SidebarNavigation.AddHandler(UIElement.PointerMovedEvent,
+            new PointerEventHandler(SidebarItem_PointerMoved), handledEventsToo: true);
+        SidebarNavigation.AddHandler(UIElement.PointerReleasedEvent,
+            new PointerEventHandler(SidebarItem_PointerReleased), handledEventsToo: true);
+        SidebarNavigation.PointerCanceled += (_, _) => ClearSidebarDrag();
+        SidebarNavigation.PointerCaptureLost += (_, e) =>
+        {
+            if (ReferenceEquals(e.OriginalSource, SidebarNavigation)) ClearSidebarDrag();
+        };
         ExtendsContentIntoTitleBar = true;
         // Keep the interactive TabView out of the native drag rectangle. If the
         // entire title-bar grid is registered, tiny movements on a tab can invoke
@@ -217,7 +229,7 @@ public sealed partial class MainWindow : Window
             UpdateZoomCommandState();
             // The first window seeds the shared sidebar; later windows reuse the live
             // in-memory list so they never resurrect a stale copy from disk.
-            ((App)Application.Current).SeedSidebar(_settings.SidebarGroups);
+            ((App)Application.Current).SeedSidebar(_settings);
             _drives = _tearOutSource?._drives ?? await Task.Run(DriveService.GetAvailableDrives);
             RebuildSidebar();
             _indexer.EnsureWorkerStarted();
@@ -293,16 +305,13 @@ public sealed partial class MainWindow : Window
 
     private void RebuildSidebar()
     {
+        ClearSidebarDrag();
         SidebarNavigation.MenuItems.Clear();
 
         foreach (var group in _sidebarGroups.OrderBy(group => group.Order))
         {
             SidebarNavigation.MenuItems.Add(new NavigationViewItemHeader { Content = group.Label });
-            foreach (var item in group.Items.OrderBy(item => item.Order))
-            {
-                var navigationItem = CreateSidebarNavigationItem(item, isPinned: true);
-                SidebarNavigation.MenuItems.Add(navigationItem);
-            }
+            AddSidebarItems(group.Items.OrderBy(item => item.Order).ToArray(), isPinned: true);
         }
 
         if (_sidebarGroups.Any(group => group.Items.Count > 0))
@@ -311,34 +320,43 @@ public sealed partial class MainWindow : Window
         }
 
         SidebarNavigation.MenuItems.Add(new NavigationViewItemHeader { Content = "Devices" });
-        var thisPcItem = new SidebarItem(
-            SpecialLocations.ThisPcId,
-            "This PC",
-            SpecialLocations.ThisPc,
-            SidebarTargetType.KnownFolder,
-            "ThisPc",
-            -1);
-        var thisPcNavigationItem = CreateSidebarNavigationItem(thisPcItem, isPinned: false);
-        SidebarNavigation.MenuItems.Add(thisPcNavigationItem);
+        AddSidebarItems(GetDeviceSidebarItems(), isPinned: false);
+        SynchronizeSidebarSelection(ActiveTab?.Session.CurrentPath);
+    }
 
-        foreach (var drive in _drives)
-        {
-            var driveItem = new SidebarItem(
+    private SidebarItem[] GetDeviceSidebarItems()
+    {
+        var thisPc = new SidebarItem(SpecialLocations.ThisPcId, "This PC", SpecialLocations.ThisPc,
+            SidebarTargetType.KnownFolder, "ThisPc", -1);
+        var devices = _drives.Select(drive => new SidebarItem(
                 drive.Id,
                 drive.DisplayName,
                 drive.RootPath,
                 drive.DriveType == DriveType.Network ? SidebarTargetType.Network : SidebarTargetType.Drive,
                 drive.Icon,
-                -1);
-            var navigationItem = CreateSidebarNavigationItem(driveItem, isPinned: false);
-            if (!drive.IsReady)
+                -1))
+            .Prepend(thisPc)
+            .ToDictionary(item => item.Id);
+        return SidebarOrder.GetSavedAndNew(_sidebarDeviceOrder, devices.Keys)
+            .Where(devices.ContainsKey)
+            .Select(id => devices[id])
+            .ToArray();
+    }
+
+    private void AddSidebarItems(IReadOnlyList<SidebarItem> items, bool isPinned)
+    {
+        for (var index = 0; index < items.Count; index++)
+        {
+            var item = items[index];
+            var previous = index > 0 ? items[index - 1] : null;
+            var next = index + 1 < items.Count ? items[index + 1] : null;
+            var navigationItem = CreateSidebarNavigationItem(item, isPinned, previous, next);
+            if (!isPinned && _drives.Any(drive => drive.Id == item.Id && !drive.IsReady))
             {
                 ToolTipService.SetToolTip(navigationItem, "This device is currently unavailable");
             }
             SidebarNavigation.MenuItems.Add(navigationItem);
         }
-
-        SynchronizeSidebarSelection(ActiveTab?.Session.CurrentPath);
     }
 
     private void SynchronizeSidebarSelection(string? path)
@@ -379,7 +397,8 @@ public sealed partial class MainWindow : Window
         SidebarNavigation.SelectedItem = best;
     }
 
-    private NavigationViewItem CreateSidebarNavigationItem(SidebarItem item, bool isPinned)
+    private NavigationViewItem CreateSidebarNavigationItem(
+        SidebarItem item, bool isPinned, SidebarItem? previous, SidebarItem? next)
     {
         var navigationItem = new NavigationViewItem
         {
@@ -390,9 +409,15 @@ public sealed partial class MainWindow : Window
                 Glyph = ResolveSidebarGlyph(item.Icon),
                 Foreground = ResolveSidebarIconBrush(item.Icon)
             },
-            ContextFlyout = CreateSidebarContextFlyout(item, isPinned),
+            ContextFlyout = CreateSidebarContextFlyout(item, isPinned, previous, next),
             AllowDrop = item.Target != SpecialLocations.ThisPc
         };
+        if (previous is not null || next is not null)
+        {
+            // The navigation item presenter handles pointer input before the item.
+            navigationItem.AddHandler(UIElement.PointerPressedEvent,
+                new PointerEventHandler(SidebarItem_PointerPressed), handledEventsToo: true);
+        }
         navigationItem.DragOver += SidebarItem_DragOver;
         navigationItem.DragLeave += SidebarItem_DragLeave;
         navigationItem.Drop += SidebarItem_Drop;
@@ -405,7 +430,88 @@ public sealed partial class MainWindow : Window
         return navigationItem;
     }
 
-    private MenuFlyout CreateSidebarContextFlyout(SidebarItem item, bool isPinned)
+    private void SidebarItem_PointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        var point = e.GetCurrentPoint(SidebarNavigation);
+        _sidebarDragCandidate = point.Properties.IsLeftButtonPressed && sender is NavigationViewItem row
+            ? (row, point.PointerId, point.Position)
+            : null;
+    }
+
+    private void SidebarItem_PointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (_sidebarDragCandidate is not { } candidate) return;
+        var point = e.GetCurrentPoint(SidebarNavigation);
+        if (point.PointerId != candidate.PointerId) return;
+        if (!point.Properties.IsLeftButtonPressed)
+        {
+            ClearSidebarDrag();
+            return;
+        }
+
+        if (!_sidebarDragging)
+        {
+            const double threshold = 5;
+            if (Math.Abs(point.Position.X - candidate.Position.X) < threshold
+                && Math.Abs(point.Position.Y - candidate.Position.Y) < threshold) return;
+            SidebarNavigation.CapturePointer(e.Pointer);
+            _sidebarDragging = true;
+        }
+        e.Handled = true;
+        if (GetSidebarDropTarget(candidate.Row, point.Position) is not { } target)
+        {
+            SidebarInsertionLine.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        SidebarInsertionLine.Margin = new Thickness(target.Bounds.X + 8,
+            (target.After ? target.Bounds.Bottom : target.Bounds.Top) - 1, 0, 0);
+        SidebarInsertionLine.Width = Math.Max(0, target.Bounds.Width - 16);
+        SidebarInsertionLine.Visibility = Visibility.Visible;
+    }
+
+    private async void SidebarItem_PointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        if (_sidebarDragCandidate is not { } candidate || e.Pointer.PointerId != candidate.PointerId) return;
+        var target = _sidebarDragging
+            ? GetSidebarDropTarget(candidate.Row, e.GetCurrentPoint(SidebarNavigation).Position)
+            : null;
+        e.Handled |= _sidebarDragging;
+        ClearSidebarDrag();
+        SidebarNavigation.ReleasePointerCapture(e.Pointer);
+        if (target is { } placement && candidate.Row.Tag is SidebarItem source)
+        {
+            await MoveSidebarItemAsync(source.Id, placement.Item.Id, placement.After);
+        }
+    }
+
+    private (SidebarItem Item, Windows.Foundation.Rect Bounds, bool After)? GetSidebarDropTarget(
+        NavigationViewItem sourceRow, Windows.Foundation.Point position)
+    {
+        if (sourceRow.Tag is not SidebarItem source || position.X < 0 || position.X >= SidebarNavigation.OpenPaneLength
+            || position.Y < 0 || position.Y >= SidebarNavigation.ActualHeight) return null;
+        foreach (var row in SidebarNavigation.MenuItems.OfType<NavigationViewItem>())
+        {
+            if (!row.IsLoaded || row.Tag is not SidebarItem item) continue;
+            var bounds = row.TransformToVisual(SidebarNavigation)
+                .TransformBounds(new Windows.Foundation.Rect(0, 0, row.ActualWidth, row.ActualHeight));
+            if (bounds.Contains(position) && GetSidebarMoveOrder(source.Id, item.Id) is not null)
+            {
+                return (item, bounds, position.Y >= bounds.Y + bounds.Height / 2);
+            }
+        }
+        return null;
+    }
+
+    private void ClearSidebarDrag()
+    {
+        _sidebarDragCandidate = null;
+        _sidebarDragging = false;
+        SidebarInsertionLine.Visibility = Visibility.Collapsed;
+    }
+
+    private MenuFlyout CreateSidebarContextFlyout(
+        SidebarItem item, bool isPinned, SidebarItem? previous, SidebarItem? next)
     {
         var flyout = new MenuFlyout();
         flyout.Items.Add(CreateSidebarMenuItem("Open", item, SidebarOpen_Click));
@@ -415,9 +521,22 @@ public sealed partial class MainWindow : Window
         flyout.Items.Add(CreateSidebarMenuItem("Copy path", item, SidebarCopyPath_Click));
         flyout.Items.Add(CreateSidebarMenuItem("Open in Windows Explorer", item, SidebarOpenInExplorer_Click));
         flyout.Items.Add(CreateSidebarMenuItem("Properties", item, SidebarProperties_Click));
-        if (isPinned)
+        if (previous is not null || next is not null || isPinned)
         {
             flyout.Items.Add(new MenuFlyoutSeparator());
+        }
+        if (previous is not null)
+        {
+            flyout.Items.Add(CreateSidebarMenuItem("Move up", item,
+                async (_, _) => await MoveSidebarItemAsync(item.Id, previous.Id, after: false, restoreFocus: true)));
+        }
+        if (next is not null)
+        {
+            flyout.Items.Add(CreateSidebarMenuItem("Move down", item,
+                async (_, _) => await MoveSidebarItemAsync(item.Id, next.Id, after: true, restoreFocus: true)));
+        }
+        if (isPinned)
+        {
             flyout.Items.Add(CreateSidebarMenuItem("Unpin", item, SidebarUnpin_Click));
         }
 
@@ -2284,8 +2403,9 @@ public sealed partial class MainWindow : Window
 
     private void SidebarItem_DragOver(object sender, DragEventArgs e)
     {
-        if (sender is not NavigationViewItem { Tag: SidebarItem item }
-            || item.Target == SpecialLocations.ThisPc
+        if (sender is not NavigationViewItem { Tag: SidebarItem item } row) return;
+
+        if (item.Target == SpecialLocations.ThisPc
             || !Directory.Exists(item.Target)
             || !ContainsSupportedDropData(e.DataView))
         {
@@ -2298,7 +2418,7 @@ public sealed partial class MainWindow : Window
         e.DragUIOverride.Caption = $"{(operation == DataPackageOperation.Move ? "Move" : "Copy")} to {item.Label}";
         e.DragUIOverride.IsCaptionVisible = true;
         e.DragUIOverride.IsGlyphVisible = true;
-        ((NavigationViewItem)sender).Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SubtleFillColorSecondaryBrush"];
+        row.Background = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["SubtleFillColorSecondaryBrush"];
     }
 
     private static void SidebarItem_DragLeave(object sender, DragEventArgs e)
@@ -2311,17 +2431,63 @@ public sealed partial class MainWindow : Window
 
     private async void SidebarItem_Drop(object sender, DragEventArgs e)
     {
-        if (sender is not NavigationViewItem { Tag: SidebarItem item }
-            || item.Target == SpecialLocations.ThisPc
+        if (sender is not NavigationViewItem { Tag: SidebarItem item } row) return;
+        row.ClearValue(Control.BackgroundProperty);
+
+        if (item.Target == SpecialLocations.ThisPc
             || !Directory.Exists(item.Target))
         {
             return;
         }
 
-        ((NavigationViewItem)sender).ClearValue(Control.BackgroundProperty);
         _dropHandledInApp = true;
         EndControlledDragScrolling();
         await CompleteDropAsync(e, item.Target, ResolveDropOperation(e, item.Target));
+    }
+
+    private (int GroupIndex, List<Guid> Order)? GetSidebarMoveOrder(Guid source, Guid target)
+    {
+        if (source == target) return null;
+        var groupIndex = _sidebarGroups.FindIndex(group => group.Items.Any(item => item.Id == target));
+        var visible = groupIndex >= 0
+            ? _sidebarGroups[groupIndex].Items.OrderBy(item => item.Order).Select(item => item.Id)
+            : GetDeviceSidebarItems().Select(item => item.Id);
+        var visibleOrder = visible.ToList();
+        return visibleOrder.Contains(source) && visibleOrder.Contains(target)
+            ? (groupIndex, visibleOrder)
+            : null;
+    }
+
+    private async Task MoveSidebarItemAsync(Guid source, Guid target, bool after, bool restoreFocus = false)
+    {
+        if (GetSidebarMoveOrder(source, target) is not { } move
+            || !SidebarOrder.TryMove(move.Order, source, target, after)) return;
+
+        if (move.GroupIndex >= 0)
+        {
+            var group = _sidebarGroups[move.GroupIndex];
+            var byId = group.Items.ToDictionary(item => item.Id);
+            _sidebarGroups[move.GroupIndex] = group with
+            {
+                Items = move.Order.Select((id, order) => byId[id] with { Order = order }).ToArray()
+            };
+        }
+        else
+        {
+            var saved = SidebarOrder.ApplyVisibleOrder(_sidebarDeviceOrder, move.Order);
+            _sidebarDeviceOrder.Clear();
+            _sidebarDeviceOrder.AddRange(saved);
+        }
+
+        CommitSidebarChange();
+        Breadcrumb("Sidebar reordered", move.GroupIndex >= 0 ? "Pinned" : "Devices");
+        if (restoreFocus)
+        {
+            SidebarNavigation.MenuItems.OfType<NavigationViewItem>()
+                .FirstOrDefault(row => row.Tag is SidebarItem item && item.Id == source)
+                ?.Focus(FocusState.Programmatic);
+        }
+        await SaveStateAsync();
     }
 
     private string? GetUpDropDestination()
@@ -4221,6 +4387,7 @@ public sealed partial class MainWindow : Window
         _settings = _settings with
         {
             SidebarGroups = _sidebarGroups.ToArray(),
+            SidebarDeviceOrder = _sidebarDeviceOrder.ToArray(),
             Tabs = tabs,
             ActiveTabId = _settings.RestorePreviousSession ? ActiveTab?.Session.Id : null,
             DetailsColumnWidths = ColumnLayout.ToContract(),
@@ -4285,5 +4452,5 @@ public sealed partial class MainWindow : Window
     }
 
     private static string DriveSignature(DriveDescriptor drive) =>
-        $"{drive.RootPath}|{drive.DisplayName}|{drive.CapacityText}|{drive.IsReady}";
+        $"{drive.Id}|{drive.RootPath}|{drive.DisplayName}|{drive.CapacityText}|{drive.IsReady}";
 }

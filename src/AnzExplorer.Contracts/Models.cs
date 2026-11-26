@@ -75,6 +75,7 @@ public sealed record ExplorerSettings
 
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public IReadOnlyList<SidebarGroup> SidebarGroups { get; init; } = [];
+    public IReadOnlyList<Guid> SidebarDeviceOrder { get; init; } = [];
     public IReadOnlyList<TabSession> Tabs { get; init; } = [];
     public Guid? ActiveTabId { get; init; }
     public bool RestorePreviousSession { get; init; }

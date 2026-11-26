@@ -7,6 +7,7 @@
 bin/
 obj/
 artifacts/
+/AnzExplorer.exe
 TestResults/
 *.user
 *.suo

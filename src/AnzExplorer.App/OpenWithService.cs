@@ -11,6 +11,17 @@ internal static class OpenWithService
 {
     private const int CancelledHResult = unchecked((int)0x800704C7);
 
+    public static string? GetDefaultApplicationIconPath(string extension)
+    {
+        var appId = QueryAssociation(extension, AssociationString.AppId);
+        if (appId?.Contains('!') == true) return $@"shell:AppsFolder\{appId}";
+
+        var executable = QueryAssociation(extension, AssociationString.Executable);
+        return !string.IsNullOrWhiteSpace(executable) && Path.IsPathFullyQualified(executable)
+            && !Path.GetFileName(executable).Equals("ApplicationFrameHost.exe", StringComparison.OrdinalIgnoreCase)
+            ? executable
+            : null;
+    }
     public static IReadOnlyList<OpenWithApplication> GetRecommendedApplications(string path, int maximum = 8)
     {
         var extension = Path.GetExtension(path);
@@ -177,7 +188,8 @@ internal static class OpenWithService
 
     private enum AssociationString : uint
     {
-        Executable = 2
+        Executable = 2,
+        AppId = 21
     }
 
     [Flags]

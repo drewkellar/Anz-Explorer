@@ -680,5 +680,13 @@
                 </Border>
             </Grid>
         </NavigationView>
+        <Border x:Name="SidebarInsertionLine"
+                Grid.Row="3"
+                Height="2"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                IsHitTestVisible="False"
+                Visibility="Collapsed"
+                Background="{ThemeResource AccentFillColorDefaultBrush}" />
     </Grid>
 </Window>

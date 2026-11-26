@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using AnzExplorer.Contracts;
@@ -30,6 +31,7 @@ internal static class DriveService
     public static IReadOnlyList<DriveDescriptor> GetAvailableDrives()
     {
         var drives = new List<DriveDescriptor>();
+        var seenIds = new HashSet<Guid>();
         foreach (var drive in DriveInfo.GetDrives())
         {
             try
@@ -59,8 +61,10 @@ internal static class DriveService
                 var capacity = isReady
                     ? $"{FileSystemItemViewModel.FormatBytes(drive.AvailableFreeSpace)} free of {FileSystemItemViewModel.FormatBytes(drive.TotalSize)}"
                     : "Not ready";
+                var id = GetDriveId(drive);
+                if (!seenIds.Add(id)) id = CreateStableId(drive.Name);
                 drives.Add(new DriveDescriptor(
-                    CreateStableId(drive.Name),
+                    id,
                     drive.Name,
                     $"{volumeLabel} ({driveName})",
                     typeLabel,
@@ -133,11 +137,29 @@ internal static class DriveService
             .ToArray();
     }
 
+    private static Guid GetDriveId(DriveInfo drive)
+    {
+        if (drive.DriveType is not DriveType.Network)
+        {
+            var volumeName = new StringBuilder(50);
+            if (GetVolumeNameForVolumeMountPoint(drive.Name, volumeName, (uint)volumeName.Capacity))
+            {
+                return CreateStableId(volumeName.ToString());
+            }
+        }
+
+        return CreateStableId(drive.Name);
+    }
+
     private static Guid CreateStableId(string value)
     {
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(value.ToUpperInvariant()));
         return new Guid(hash.AsSpan(0, 16));
     }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, EntryPoint = "GetVolumeNameForVolumeMountPointW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetVolumeNameForVolumeMountPoint(string mountPoint, StringBuilder volumeName, uint bufferLength);
 }
 
 internal static class NetworkLocationService

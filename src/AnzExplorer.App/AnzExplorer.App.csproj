@@ -18,6 +18,7 @@
   <ItemGroup>
     <Content Include="Assets\AnzExplorer.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\AnzExplorer.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\TextFile.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <Target Name="BuildIndexer" BeforeTargets="Build">
     <MSBuild Projects="..\AnzExplorer.Indexer\AnzExplorer.Indexer.csproj"

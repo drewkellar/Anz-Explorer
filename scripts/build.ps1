@@ -6,8 +6,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
+$repositoryDotnet = Join-Path $repositoryRoot ".dotnet\dotnet.exe"
 $localDotnet = Join-Path $env:LOCALAPPDATA "Microsoft\dotnet\dotnet.exe"
-$dotnet = if (Test-Path -LiteralPath $localDotnet) { $localDotnet } else { "dotnet" }
+$dotnet = if (Test-Path -LiteralPath $repositoryDotnet) {
+    $repositoryDotnet
+} elseif (Test-Path -LiteralPath $localDotnet) {
+    $localDotnet
+} else {
+    "dotnet"
+}
 $env:DOTNET_CLI_HOME = Join-Path $repositoryRoot ".dotnet-home"
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
 $env:DOTNET_NOLOGO = "1"
@@ -16,6 +23,13 @@ $env:DOTNET_NOLOGO = "1"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 & $dotnet build (Join-Path $repositoryRoot "AnzExplorer.sln") -c $Configuration -p:Platform=x64 --no-restore
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$launcherCompiler = Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+$launcherPath = Join-Path $repositoryRoot "AnzExplorer.exe"
+$launcherIcon = Join-Path $repositoryRoot "src\AnzExplorer.App\Assets\AnzExplorer.ico"
+$launcherSource = Join-Path $PSScriptRoot "LaunchAnzExplorer.cs"
+& $launcherCompiler /nologo /warnaserror+ /target:winexe /platform:x64 "/define:$Configuration" "/win32icon:$launcherIcon" "/out:$launcherPath" $launcherSource
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 & $dotnet test (Join-Path $repositoryRoot "tests\AnzExplorer.Core.Tests\AnzExplorer.Core.Tests.csproj") -c $Configuration -p:Platform=x64 --no-build --no-restore

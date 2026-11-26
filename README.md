@@ -34,10 +34,10 @@ The folder-size design and alternatives are documented in [FOLDER_SIZE_RESEARCH.
 .\scripts\build.ps1
 ```
 
-Run the debug build:
+Run the launcher generated in the repository root. It starts the app built by the most recent run of the build script.
 
 ```powershell
-.\src\AnzExplorer.App\bin\x64\Debug\net10.0-windows10.0.26100.0\win-x64\AnzExplorer.exe
+.\AnzExplorer.exe
 ```
 
 An optional per-user “Open in Anz Explorer” context-menu entry can be installed and removed with the scripts under `scripts/`. These scripts do not replace `explorer.exe` or change the default folder handler.
